@@ -1,0 +1,45 @@
+	======================================================
+	Computation of the Euclidean minimum of a number field
+	======================================================
+
+### BASIC PRESENTATION ###
+Given a number field K (defined by an irreducible polynomial P with
+integral coefficients), the program tries to compute 
+   M(K) = sup m_K(x) for any element x of K, where
+   m_K(x)  = min(N(x-X)) for X in the ring of integers of K,
+it provides the points x for which M(K)= m_K(x) if the algorithm is 
+successful.
+
+### INSTALLATION ###
+See INSTALL file.
+
+### EXECUTION ###
+Either type ./euclid and then a polynomial (as requested) or type
+./euclid "x^2-61" or ./euclid [1,0,-61] (you can replace x^2-61
+by any polynomial that you are interested in).
+
+### MORE DETAILS ###
+With the default parameters, few details are provided, you can have
+more information by changing the configuration file euclid.cfg.
+
+### LIMITATIONS AND PROBLEMS###
+1. Precision is provided "by hand" in euclid.cfg and some care is
+   required, especially when the degree and/or the discriminant grows.
+2. There is no guarantee that a convenient graph will be obtained at any
+   step, experience shows however that tweaking with the parameters makes
+   the algorithm successful in most "reasonable" cases.
+3. The algorithm does not work very well (or at all) when the units of
+   the number field are "bad", that is to say the absolute value of their
+   embeddings is too big or too small (e.g. the algorithm does not work
+   presently for x^4-61).
+4. The procedures' names are mostly french and will probably be quite
+   difficult to understand for non-french speakers.
+
+### REFERENCE ###
+The procedures are the application of the article available at
+<http://hal.archives-ouvertes.fr/hal-00632997/>
+
+### CHAPEL PORT ###
+An arbitrary-degree Chapel reimplementation of this algorithm (floating
+point kernel, Pari used only for one-time field setup and optional exact
+certification) lives alongside this C tool. See CHAPEL.md for details.

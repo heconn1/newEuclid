@@ -1,0 +1,33 @@
+Before proceeding to target GPUs, I have some questions.
+
+1) The current code now performs better wuth the totally real cubic,
+   but seems to end with an uncertain answer. Is there a way to have it
+   run until it gets the definitive answer?
+
+ euclid-1.0 ./fourthCut
+Loading execution framework...
+Starting parallel AMR sieve strategy...
+Depth level 1 | Active boxes to process: 1
+Depth level 2 | Active boxes to process: 8
+Depth level 3 | Active boxes to process: 64
+Depth level 4 | Active boxes to process: 96
+Depth level 5 | Active boxes to process: 288
+Depth level 6 | Active boxes to process: 1200
+Depth level 7 | Active boxes to process: 6608
+Depth level 8 | Active boxes to process: 41776
+Depth level 9 | Active boxes to process: 294752
+Depth level 10 | Active boxes to process: 2213664
+
+🛑 Sieve execution completed with limits.
+Total remaining un-cleared suspect coordinates at resolution ceiling: 2141756
+This implies the field's actual Euclidean minimum or critical point boundary is near this threshold region.
+
+
+2) In Lesowski's own C-language implementation of his algorithm, the code
+   can compuee the Euclidean minimum, not just confirm it. Can our Chapel
+   code be made to do this?
+   
+
+
+
+

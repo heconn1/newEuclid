@@ -1,0 +1,54 @@
+                        =================
+                        Installing euclid
+                        =================
+
+### COMPILATION AND BASIC USAGE ###
+
+0. You first need to install the pari C library. 
+   See <http://pari.math.u-bordeaux.fr/>.
+   euclid requires pari version 2.4.2 or later.
+   You also need gcc to compile the files.
+
+1. In the directory of the euclid archive, type
+
+      tar xvf euclid-1.0.tar.xz
+      cd euclid-1.0
+      make
+
+2. You can now run ./euclid to obtain the Euclidean minimum of a
+   polynomial. You can also type 
+   	       ./euclid "x^2-61" or ./euclid [1,0,-61]
+   directly.
+
+### TWEAKING ###
+
+   You can change the parameters of execution by changing the 
+   configuration file euclid.cfg. No compilation is required to take
+   into account these changes.
+
+### OPTIONS ###
+
+1. You can use OPENMP by putting OMP=yes in the Makefile. You need
+   to compile again (make clean && make should do the trick). This may
+   actually slow the algorithm in fast cases but it will definitely speed
+   it up for slower cases (provided your processor has more than one core).
+
+2. You can use a database of Euclidean minima: 
+   a. download the sqlite amalgmation file at 
+      <http://www.sqlite.org/download.html>.
+
+   b. extract sqlite3.c and sqlite3.h into the euclid-1.0/src/ directory.
+
+   c. put SQLITE=yes in the Makefile.
+
+   d. (optional) download table_euc.db at
+      <http://math.u-bordeaux1.fr/~lezowski/euclid/>, put it in the /db
+      directory. If you do not download it, an empty database will be created.
+   
+   e. compile again (make clean && make).
+
+   Now the program will check if the number field used is in the database 
+   (and can add it to the database if it does not exist).
+   By default, sqlite3 requires lpthread to make it thread safe, but you can 
+   bypass this requirement if you really need to by replacing the line 17 of 
+   the Makefile by CFLAGS+= -DSQLITE_THREADSAFE=0 .

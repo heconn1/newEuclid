@@ -1,0 +1,17 @@
+# C build artifacts
+src/*.o
+/euclid
+result
+
+# Chapel build artifacts
+/euclid_chpl
+*_real
+.dSYM/
+
+# Generated/scratch field data (intentional saved fixtures live in
+# tests/fixtures/ and are tracked)
+/field_data.txt
+/field_data.txt.old
+
+# sqlite database (only used if SQLITE=yes in Makefile)
+db/*.db
