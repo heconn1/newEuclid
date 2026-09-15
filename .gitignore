@@ -7,6 +7,7 @@ result
 /euclid_chpl
 *_real
 .dSYM/
+/tests/build/
 
 # Generated/scratch field data (intentional saved fixtures live in
 # tests/fixtures/ and are tracked)

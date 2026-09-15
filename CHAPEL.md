@@ -86,6 +86,21 @@ hand-unrolled loops.
 
 ## Building and running
 
+A `Makefile` target automates each step (all are additive to the existing
+C-tool targets — `make` alone still just builds `euclid`, as before):
+
+```sh
+make chapel   # chpl -M . main.chpl -o euclid_chpl
+make fixtures # generate any missing tests/fixtures/*.txt via gp
+make smoke    # compile + run the standalone per-module smoke tests
+make test     # build both tools and run tests/validate.sh (Chapel vs C)
+make check    # smoke + test
+make all      # euclid (C) + chapel
+make clean-chapel  # remove Chapel build artifacts (also run by `make clean`)
+```
+
+Equivalently, by hand:
+
 ```sh
 chpl -M . main.chpl -o euclid_chpl
 ./euclid_chpl --fieldFile=tests/fixtures/x3-3x-1.txt --tolerance=0.001
