@@ -47,7 +47,12 @@ they frequently reported wrong minima and were hard-capped at low degree.
   optimization) for fields with large regulators, such as `x^2-61`.
 - `Certify.chpl` — turns a numeric upper bound into a genuine
   Pari-certified lower bound by evaluating the exact norm at the
-  most-resistant sampled points.
+  most-resistant sampled points. Its brute-force search range scales with
+  degree (a flat range is provably too small for some fields, e.g.
+  `x^2-61` needs `>= 5`) and also tries small unit powers, and `main.chpl`
+  additionally discards any sampled value that's `>=` the proven numeric
+  upper bound, since that's provably impossible — so a reported certified
+  bound is always sound, even on fields the search still isn't tight for.
 - `main.chpl` — the CLI: exponential bracket search, bisection
   refinement, and an optional certification pass.
 
@@ -76,8 +81,9 @@ respectively).
 **Known limitations:** degree-5+ fields converge more slowly/loosely than
 degree 2-3 within the same time budget; Phase 3 samples resistant boxes
 rather than porting Lezowski's full unit-orbit cycle/graph decomposition,
-so it isn't guaranteed to land exactly on the supremum for harder fields;
-multi-locale/GPU scaling is designed for but not yet built.
+so it isn't guaranteed to land exactly on the supremum for harder fields
+(though it is always sound — see `Certify.chpl` above); multi-locale/GPU
+scaling is designed for but not yet built.
 
 See [`CHAPEL.md`](CHAPEL.md) for the full writeup (including why each
 design choice was necessary, not just convenient) and the complete CLI

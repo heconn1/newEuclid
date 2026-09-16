@@ -79,6 +79,23 @@ hand-unrolled loops.
   human-readable closed form (e.g. `1/3`) from a tight numeric bracket, as
   a conjecture to sanity-check against (not a proof by itself).
 
+  The brute-force `gamma` search inside the generated `gp` script uses
+  `defaultSearchRange` to scale its range with degree (the same
+  budget-based approach as `SmallElements.candidateBoundRange`) instead of
+  a flat constant: a flat range is too small for some fields to find the
+  true nearest lattice point, silently returning a value that's too large
+  to actually be `m_K(x)` (concretely, `x^2-61` needs `searchRange >= 5`;
+  a flat `3` returns an inflated, unsound result there). The search also
+  tries small powers of the field's fundamental units alongside `gamma`
+  (since `|N(u*x - gamma)| = |N(x - gamma*u^-1)|` for any unit `u`), the
+  exact-arithmetic analogue of `Sieve.chpl`'s unit-action acceleration.
+  As a second, independent line of defense, `main.chpl` discards any
+  sampled exact value that is `>=` the already-proven numeric upper bound
+  `hi` before ever reporting it as certified — such a value is provably
+  impossible (`m_K(x) <= M(K) < hi`) regardless of *why* the search missed
+  the true minimum, so this check holds even if some future field exposes
+  a case the current search range/unit range still isn't large enough for.
+
 - **`main.chpl`** — CLI entry point: loads a field, brackets M(K) with an
   exponential search, refines the bracket via bisection (each trial an
   independent, parallel `runSieve` call), and finally attempts Phase 3
@@ -167,7 +184,10 @@ Other test files under `tests/`:
   unit-orbit critical cycle (`src/graph.c`'s Tarjan-based decomposition).
   It works well for the well-known small examples but is not guaranteed to
   land exactly on the supremum for harder fields; the full graph/cycle
-  port remains a documented fallback if this proves insufficient.
+  port remains a documented fallback if this proves insufficient. Thanks
+  to the degree-scaled search range and the `hi`-based soundness guard
+  (see `Certify.chpl` above), a reported certified bound is always sound
+  (never exceeds the true minimum) even when it isn't tight.
 - **Parallelization roadmap** (not yet built): the per-level box list and
   the small-elements enumeration are both `forall`-parallel today
   (single-locale, multi-core). Scaling to multiple locales (distribute the
