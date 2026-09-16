@@ -32,7 +32,7 @@ euclid: $(OBJ)
 	gcc $(CFLAGS) -o $(PROG) $(OBJ) $(LDFLAGS)
 
 $(ODIR)/%.o: %.c header.h
-	gcc $(CFLAGS) -o $@ $< -c
+	gcc $(CFLAGS) -fcommon -o $@ $< -c
 
 %.c: %.gp
 	gp2c -S -g > $@ $<
