@@ -97,7 +97,14 @@ proc main() throws {
         const exact = exactMinimalNormAt(nf.polynomial, lastBlocked.remaining[i].center, nf.degree);
         const parts = exact.split("/");
         const val = if parts.size == 2 then parts[0]:real(64) / parts[1]:real(64) else exact:real(64);
-        if val > bestNum { bestNum = val; bestStr = exact; }
+        // Soundness guard: m_K(x) <= M(K) < hi always, since hi is a proven
+        // upper bound. A sample >= hi is therefore provably impossible and
+        // means exactMinimalNormAt's bounded search missed the true nearest
+        // lattice point (this happens for large-regulator fields, since the
+        // exact search does not yet use unit-action reduction the way the
+        // numeric sieve does) -- discard it rather than reporting a false
+        // "certified" claim.
+        if val > bestNum && val < hi { bestNum = val; bestStr = exact; }
       } catch {
         // gp unavailable or parsing failed for this sample; skip it.
       }
@@ -105,7 +112,10 @@ proc main() throws {
     if bestStr.size > 0 {
       writeln("  certified lower bound:   M(K) >= ", bestStr, " ~= ", bestNum, " (exact, proven via Pari)");
     } else {
-      writeln("  certification unavailable (is `gp` installed and on PATH?)");
+      writeln("  certification unavailable this run (no sample survived the ",
+              "soundness check against the proven upper bound -- try a larger ",
+              "--certifySamples, or this field's regulator may require ",
+              "unit-aware exact search, not yet implemented)");
     }
   }
 }
