@@ -5,7 +5,7 @@ PROG=euclid
 ODIR=src
 OBJS=main.o pari_min_c.o graph.o basef.o
 LDFLAGS=-lpari -lm -ldl
-CFLAGS=-Wall
+CFLAGS=-Wall -fcommon
 ifeq "$(DEBUG)" "yes"
 CFLAGS+=-g -pedantic -O0
 else
@@ -32,7 +32,7 @@ euclid: $(OBJ)
 	gcc $(CFLAGS) -o $(PROG) $(OBJ) $(LDFLAGS)
 
 $(ODIR)/%.o: %.c header.h
-	gcc $(CFLAGS) -fcommon -o $@ $< -c
+	gcc $(CFLAGS) -o $@ $< -c
 
 %.c: %.gp
 	gp2c -S -g > $@ $<
