@@ -73,14 +73,22 @@ all: euclid chapel
 
 chapel: $(CHPL_BIN)
 
+# Force the standard CPU ("flat") locale model for this project's builds.
+# If CHPL_LOCALE_MODEL=gpu is set in the ambient environment (e.g. a Chapel
+# toolchain configured for GPU offload work), chpl 2.9.0 hits an internal
+# compiler error (COD-CG--XPR-03263) analyzing Sieve.chpl's forall loops for
+# GPU eligibility; this code doesn't use any GPU-specific features, so
+# there's nothing to gain from that mode here, only risk.
+CHPL_ENV=CHPL_LOCALE_MODEL=flat
+
 $(CHPL_BIN): main.chpl $(CHPL_MODULES)
-	$(CHPL) -M . main.chpl -o $(CHPL_BIN)
+	$(CHPL_ENV) $(CHPL) -M . main.chpl -o $(CHPL_BIN)
 
 $(TEST_BUILD_DIR):
 	mkdir -p $(TEST_BUILD_DIR)
 
 $(TEST_BUILD_DIR)/%: tests/%.chpl $(CHPL_MODULES) | $(TEST_BUILD_DIR)
-	$(CHPL) -M . $< -o $@
+	$(CHPL_ENV) $(CHPL) -M . $< -o $@
 
 # Compiles and runs the standalone per-module smoke tests under tests/.
 smoke: $(addprefix $(TEST_BUILD_DIR)/,$(SMOKE_TESTS))
