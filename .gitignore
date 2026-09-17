@@ -17,3 +17,12 @@ result
 
 # sqlite database (only used if SQLITE=yes in Makefile)
 db/*.db
+
+# Periodically-regenerated doc export artifacts (org-mode/pdf/tex exports
+# of README.md / CHAPEL.md); the .md files are the tracked source of truth
+/README.org
+/README.pdf
+/README.tex
+/CHAPEL.org
+/CHAPEL.pdf
+/CHAPEL.tex
