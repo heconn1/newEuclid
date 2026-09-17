@@ -18,15 +18,76 @@ The repository contains **two implementations**:
   for details, and [`AUTHORS`](AUTHORS) / [`COPYING`](COPYING) for
   attribution and license.
 - **A Chapel port** (`*.chpl` at the repository root) — a from-scratch,
-  arbitrary-degree reimplementation of the same algorithm that keeps all
-  numerically-heavy work in floating point / Chapel, parallelized with
-  `forall`, and uses Pari/gp only for one-time per-field setup and an
-  optional final exact-certification step. Builds to the `euclid_chpl`
-  binary. See [`CHAPEL.md`](CHAPEL.md) for full architecture, algorithm,
-  and usage details.
+  arbitrary-degree reimplementation of the same algorithm, documented in
+  full below and in [`CHAPEL.md`](CHAPEL.md).
+
+## Chapel implementation
+
+The Chapel port computes the same M(K) as the C tool, keeping all
+numerically-heavy work in floating point / Chapel (parallelized with
+`forall`), and uses Pari/gp only for one-time per-field setup and an
+optional final exact-certification step. It builds to the `euclid_chpl`
+binary.
+
+**Why a rewrite:** earlier Chapel prototypes (now in `attic/`) tested
+whether a point's norm was below a target bound, but never tested
+*absorption* against real candidate algebraic integers (`N(x - gamma) <
+bound`) — the actual mathematical core of Lezowski's method. That's why
+they frequently reported wrong minima and were hard-capped at low degree.
+
+**Architecture** (one module per concern):
+
+- `NumberField.chpl` — parses `field_data.txt` (produced by
+  `generate_field.gp`) into degree/signature/embedding data, and computes
+  the inverse embedding matrix via a dependency-free Gauss-Jordan solver.
+- `SmallElements.chpl` — arbitrary-degree enumeration of candidate
+  absorbing algebraic integers for a target bound K.
+- `Sieve.chpl` — the real absorption test and parallel box-bisection
+  sieve, plus **unit-action acceleration**: proven necessary (not just an
+  optimization) for fields with large regulators, such as `x^2-61`.
+- `Certify.chpl` — turns a numeric upper bound into a genuine
+  Pari-certified lower bound by evaluating the exact norm at the
+  most-resistant sampled points. Its brute-force search range scales with
+  degree (a flat range is provably too small for some fields, e.g.
+  `x^2-61` needs `>= 5`) and also tries small unit powers, and `main.chpl`
+  additionally discards any sampled value that's `>=` the proven numeric
+  upper bound, since that's provably impossible — so a reported certified
+  bound is always sound, even on fields the search still isn't tight for.
+- `main.chpl` — the CLI: exponential bracket search, bisection
+  refinement, and an optional certification pass.
+
+**Algorithm in three phases:** (1) a sound covering sieve proves numeric
+upper bounds on M(K); (2) unit-action recentering lets a small,
+origin-centered candidate list stand in for absorbers spread out along a
+field's unit orbit, which large-regulator fields require to converge at
+all; (3) exact Pari evaluation at resistant sample points certifies a
+matching lower bound when possible.
 
 The Chapel port is validated against the C tool as its ground-truth oracle
-(`tests/validate.sh`); see [`CHAPEL.md`](CHAPEL.md#validation) for results.
+(`tests/validate.sh`):
+
+| Field | Reference exact minimum | Chapel bracket |
+|---|---|---|
+| `x^2-2` | 1/2 | `[0.5, 0.500977]` |
+| `x^2-61` | 1611/1525 (~1.05639) | `[1.05762, 1.05859]` |
+| `x^3+x^2-1` | 1/5 | `[0.199219, 0.200195]` |
+| `x^3-3*x-1` | 1/3 | `[0.332897 (Pari-certified), 0.333398]` |
+| `x^5-x-1` | 1/4 | converges but looser; demonstrates degree-5 support |
+
+`x^2-61` and `x^3-3*x-1` are specifically the cases the earlier prototypes
+could not solve correctly (large regulator, and rank-2 unit group
+respectively).
+
+**Known limitations:** degree-5+ fields converge more slowly/loosely than
+degree 2-3 within the same time budget; Phase 3 samples resistant boxes
+rather than porting Lezowski's full unit-orbit cycle/graph decomposition,
+so it isn't guaranteed to land exactly on the supremum for harder fields
+(though it is always sound — see `Certify.chpl` above); multi-locale/GPU
+scaling is designed for but not yet built.
+
+See [`CHAPEL.md`](CHAPEL.md) for the full writeup (including why each
+design choice was necessary, not just convenient) and the complete CLI
+reference.
 
 ## Repository layout
 

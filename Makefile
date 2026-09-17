@@ -5,7 +5,7 @@ PROG=euclid
 ODIR=src
 OBJS=main.o pari_min_c.o graph.o basef.o
 LDFLAGS=-lpari -lm -ldl
-CFLAGS=-Wall
+CFLAGS=-Wall -fcommon
 ifeq "$(DEBUG)" "yes"
 CFLAGS+=-g -pedantic -O0
 else
@@ -80,8 +80,16 @@ all: euclid chapel
 # Optimized build (default): what you want for actually running the sieve.
 chapel: $(CHPL_BIN)
 
+# Force the standard CPU ("flat") locale model for this project's builds.
+# If CHPL_LOCALE_MODEL=gpu is set in the ambient environment (e.g. a Chapel
+# toolchain configured for GPU offload work), chpl 2.9.0 hits an internal
+# compiler error (COD-CG--XPR-03263) analyzing Sieve.chpl's forall loops for
+# GPU eligibility; this code doesn't use any GPU-specific features, so
+# there's nothing to gain from that mode here, only risk.
+CHPL_ENV=CHPL_LOCALE_MODEL=flat
+
 $(CHPL_BIN): main.chpl $(CHPL_MODULES)
-	$(CHPL) $(CHPL_FLAGS) -M . main.chpl -o $(CHPL_BIN)
+	$(CHPL_ENV) $(CHPL) $(CHPL_FLAGS) -M . main.chpl -o $(CHPL_BIN)
 
 # Unoptimized build: bounds/overflow checks stay enabled; use this while
 # debugging correctness issues. Produces ./euclid_chpl_debug so it can
@@ -89,13 +97,13 @@ $(CHPL_BIN): main.chpl $(CHPL_MODULES)
 chapel-debug: $(CHPL_DEBUG_BIN)
 
 $(CHPL_DEBUG_BIN): main.chpl $(CHPL_MODULES)
-	$(CHPL) -M . main.chpl -o $(CHPL_DEBUG_BIN)
+	$(CHPL_ENV) $(CHPL) -M . main.chpl -o $(CHPL_DEBUG_BIN)
 
 $(TEST_BUILD_DIR):
 	mkdir -p $(TEST_BUILD_DIR)
 
 $(TEST_BUILD_DIR)/%: tests/%.chpl $(CHPL_MODULES) | $(TEST_BUILD_DIR)
-	$(CHPL) -M . $< -o $@
+	$(CHPL_ENV) $(CHPL) -M . $< -o $@
 
 # Compiles and runs the standalone per-module smoke tests under tests/.
 smoke: $(addprefix $(TEST_BUILD_DIR)/,$(SMOKE_TESTS))

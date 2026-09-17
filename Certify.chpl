@@ -24,6 +24,7 @@ module Certify {
   use Subprocess;
   use IO;
   use SmallElements;
+  use Math;
 
   // Finds the fraction with the smallest denominator lying strictly
   // inside (lo, hi) (Stern-Brocot / continued-fraction mediant search).
@@ -49,6 +50,20 @@ module Certify {
     return (aNum, aDen);
   }
 
+  // Chooses the largest symmetric per-coordinate integer range R such that
+  // enumerating (2R+1)^degree exact candidates in Pari stays within
+  // `budget` -- a flat small range (e.g. 3) is enough for many fields but
+  // demonstrably too small for others (e.g. x^2-61 needs R>=5 to recover
+  // its true exact minimum instead of an inflated, unsound value).
+  proc defaultSearchRange(degree: int, budget: real = 5000.0): int {
+    if degree <= 0 then return 2;
+    const raw = (budget ** (1.0/degree) - 1.0) / 2.0;
+    var r = floor(raw): int;
+    if r < 2 then r = 2;
+    if r > 60 then r = 60;
+    return r;
+  }
+
   // Returns (numerator, denominator) with denominator a power of two,
   // exact for any dyadic rational produced by our bisection (box centers
   // are always k/2^depth).
@@ -62,12 +77,18 @@ module Certify {
     return (round(x * den:real(64)): int, den);
   }
 
-  // Computes min_{gamma in O_K, coeffs in [-searchRange,searchRange]^degree}
-  // |N(x - gamma)| exactly, where x has the given (rational) integral-basis
-  // coefficients, by shelling out once to gp. Returns gp's printed value
-  // (an exact rational, e.g. "1/3") on success.
+  // Computes min_{gamma in O_K, u a small unit power} |N(u*x - gamma)|
+  // exactly, where x has the given (rational) integral-basis coefficients,
+  // by shelling out once to gp. Since |N(u)| = 1 for any unit u,
+  // |N(u*x - gamma)| = |N(x - gamma*u^-1)|, so searching over small unit
+  // powers alongside small gamma is exactly the exact-arithmetic analogue
+  // of Sieve.chpl's unit-action acceleration: without it, this search can
+  // miss the true nearest lattice point for large-regulator fields (the
+  // absorbers relevant there are spread out along the unit orbit, not
+  // clustered near the origin) and silently report an inflated value.
+  // Returns gp's printed value (an exact rational, e.g. "1/3") on success.
   proc exactMinimalNormAt(polynomial: string, const ref coeffs: [] real(64), degree: int,
-                           searchRange: int = 3): string throws {
+                           searchRange: int = 0, unitExponentRange: int = 1): string throws {
     var terms: string;
     for i in 1..degree {
       const (num, den) = toExactDyadic(coeffs[i]);
@@ -78,15 +99,20 @@ module Certify {
     }
     if terms.size == 0 then terms = "0";
 
-    const R = searchRange: string;
+    const R = (if searchRange > 0 then searchRange else defaultSearchRange(degree)): string;
+    const E = unitExponentRange: string;
     var script: string;
     script += "P = " + polynomial + ";\n";
     script += "nf = bnfinit(P);\n";
     script += "n = poldegree(P);\n";
     script += "zk = nf.zk;\n";
+    script += "fu = nf.fu;\n";
+    script += "r = length(fu);\n";
     script += "x = " + terms + ";\n";
     script += "best = -1;\n";
-    script += "forvec(v=vector(n,i,[-" + R + "," + R + "]), g=sum(i=1,n,v[i]*zk[i]); m=abs(nfeltnorm(nf,x-g)); if(best==-1||m<best,best=m));\n";
+    script += "forvec(e=vector(r,i,[-" + E + "," + E + "]), u=1; for(i=1,r,u=u*fu[i]^e[i]); " +
+              "forvec(v=vector(n,i,[-" + R + "," + R + "]), g=sum(i=1,n,v[i]*zk[i]); " +
+              "m=abs(nfeltnorm(nf,u*x-g)); if(best==-1||m<best,best=m)));\n";
     script += "print(best);\n";
     script += "quit;\n";
 

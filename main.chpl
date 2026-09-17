@@ -161,7 +161,10 @@ proc main() throws {
       writeln("  certification inconclusive: all ", skipped, " sampled box(es) were depth-limited artifacts ",
               "(their exact norm exceeded the proven upper bound); try a larger --certifyDepth.");
     } else {
-      writeln("  certification unavailable (is `gp` installed and on PATH?)");
+      writeln("  certification unavailable this run (no sample survived the ",
+              "soundness check against the proven upper bound -- try a larger ",
+              "--certifySamples, or this field's regulator may require ",
+              "unit-aware exact search, not yet implemented)");
     }
   }
 }

@@ -102,16 +102,29 @@ hand-unrolled loops.
   human-readable closed form (e.g. `1/3`) from a tight numeric bracket, as
   a conjecture to sanity-check against (not a proof by itself).
 
-  `exactMinimalNormAtWithCandidates` checks the sampled point against the
-  *same* norm-ranked candidate list the sieve itself used (rather than a
-  small blind coefficient range), for the same reason the sieve needs that
-  candidate list: a smaller/blind search can miss the true minimizer and
-  report a value that's too large -- confusingly, sometimes even *larger*
-  than the independently-proven upper bound. `main.chpl` additionally
-  discards any certification sample whose value exceeds the proven upper
-  bound (a `m_K(x) <= M(K_field) < hi` violation is impossible, so such a
-  sample must be a depth-limited artifact, not a genuine critical point)
-  rather than printing a self-contradictory "certified" claim.
+  Two complementary exact-search strategies are available, both
+  independently guarded by the same soundness check in `main.chpl`
+  (discard any sampled exact value `>= hi`, the proven numeric upper
+  bound — such a value is provably impossible since `m_K(x) <= M(K) <
+  hi`, so it must mean the search below missed the true nearest lattice
+  point, regardless of which strategy or why):
+
+  - `exactMinimalNormAtWithCandidates` (used by `main.chpl`) checks the
+    sampled point against the *same* norm-ranked candidate list the sieve
+    itself used, rather than a blind coefficient range -- since that list
+    is exactly what made the sieve's own bracket converge correctly, this
+    guarantees certification can never be *less* complete than the sieve
+    was for that same K.
+  - `exactMinimalNormAt` instead does an independent, self-contained
+    search directly in the generated `gp` script: a `defaultSearchRange`
+    scaled with degree (the same budget-based approach as
+    `SmallElements.candidateBoundRange`) instead of a flat constant (a
+    flat range like `3` is too small for some fields, e.g. `x^2-61` needs
+    `searchRange >= 5`), combined with small powers of the field's
+    fundamental units alongside `gamma` (since `|N(u*x - gamma)| =
+    |N(x - gamma*u^-1)|` for any unit `u`) -- the exact-arithmetic
+    analogue of `Sieve.chpl`'s unit-action acceleration. Useful when no
+    Chapel-side candidate set is at hand.
 
 - **`main.chpl`** — CLI entry point: loads a field, brackets M(K) with an
   exponential search, refines the bracket via bisection (each trial an
@@ -266,7 +279,10 @@ Other test files under `tests/`:
   unit-orbit critical cycle (`src/graph.c`'s Tarjan-based decomposition).
   It works well for the well-known small examples but is not guaranteed to
   land exactly on the supremum for harder fields; the full graph/cycle
-  port remains a documented fallback if this proves insufficient.
+  port remains a documented fallback if this proves insufficient. Thanks
+  to the degree-scaled search range and the `hi`-based soundness guard
+  (see `Certify.chpl` above), a reported certified bound is always sound
+  (never exceeds the true minimum) even when it isn't tight.
 - **Parallelization roadmap** (not yet built): the per-level box list and
   the small-elements enumeration are both `forall`-parallel today
   (single-locale, multi-core). Scaling to multiple locales (distribute the
