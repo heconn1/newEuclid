@@ -5,6 +5,7 @@ result
 
 # Chapel build artifacts
 /euclid_chpl
+/euclid_chpl_debug
 *_real
 .dSYM/
 /tests/build/

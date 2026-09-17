@@ -2,9 +2,19 @@
 //
 // Arbitrary-degree generalization of Lezowski's `small_elts` (src/main.c).
 // Enumerates integer coefficient vectors (relative to the integral basis)
-// that are plausible "absorbers": elements gamma in O_K whose embedding is
-// small enough in at least one place that N(x - gamma) could plausibly be
-// below a target bound K for some x in the fundamental domain.
+// and keeps the smallest-norm ones as plausible "absorbers" gamma in O_K.
+//
+// IMPORTANT: the filter used to require *every* embedding coordinate to be
+// individually bounded (an axis-aligned ball around the origin). That's
+// wrong for fields with a nontrivial unit group: the genuinely useful small
+// absorbers for e.g. a real quadratic field with a large fundamental unit
+// are continued-fraction-convergent-like elements whose *coefficients* can
+// be large even though their *norm* is small (that's exactly what makes an
+// element "small" in the relevant sense) -- a per-coordinate ball
+// systematically excludes them, which was observed to make the sieve
+// converge confidently on a wrong (too-large) answer for real quadratic
+// fields with sizable regulators. We instead rank all enumerated candidates
+// by actual norm and keep the smallest `candidateCap` of them.
 //
 // This is only ever used as a *sound-but-not-necessarily-complete* filter:
 // omitting a genuinely useful candidate only costs efficiency (a box that
@@ -13,9 +23,7 @@
 // covering test (Sieve.chpl) independently re-verifies each candidate.
 module SmallElements {
   use NumberField;
-  use List;
   use Math;
-  use Sort;
 
   record SmallElementSet {
     var n: int; // number of candidates
@@ -40,34 +48,32 @@ module SmallElements {
     return b;
   }
 
-  // Enumerate candidates for target bound K. `boundRange` overrides the
-  // automatic budget-based choice when > 0 (useful for tuning/testing).
-  // `candidateCap` bounds how many candidates are ultimately kept (the
-  // smallest-norm ones survive) -- absorption cost is O(candidates) per
-  // box, so this keeps per-box cost bounded regardless of degree/boundRange.
+  // Enumerate candidates in [-B,B]^degree and keep the `candidateCap`
+  // smallest-norm ones. `boundRange` overrides the automatic budget-based
+  // choice of B when > 0 (useful for tuning/testing); `K` is currently
+  // unused for filtering (norm ranking alone decides what's kept) but is
+  // kept as a parameter since callers key their candidate sets by it.
   proc smallElements(const ref nf: NumberFieldData, K: real(64), eps: real(64) = 1.0e-5,
-                      boundRange: int = 0, candidateCap: int = 500): SmallElementSet {
+                      boundRange: int = 0, candidateCap: int = 2000): SmallElementSet {
     const degree = nf.degree;
     const numEmbeddings = nf.numEmbeddings;
     const B = if boundRange > 0 then boundRange else candidateBoundRange(degree);
     const span = 2*B + 1;
 
-    // x = K^(1/degree) + eps; R[i] = x + sum_k |basis[i,k]| bounds how far
-    // an embedding coordinate of a "plausible absorber" can be from 0.
-    const x = K ** (1.0/degree) + eps;
-    var R: [1..numEmbeddings] real(64);
-    forall i in 1..numEmbeddings {
-      var s = 0.0;
-      for c in 1..degree do s += abs(nf.basis[i, c]);
-      R[i] = x + s;
-    }
-
     var total = 1: int;
     for c in 1..degree do total *= span;
 
-    var found: list((int, [1..degree] real(64), [1..numEmbeddings] complex(128)), parSafe=true);
+    // Rank every enumerated candidate by |N(w)| and keep the smallest
+    // `candidateCap`, via a single shared sorted top-cap array guarded by a
+    // lock (see insertCandidate) -- avoids materializing all `total`
+    // candidates before ranking, which matters once `total` is large.
+    const cap = max(candidateCap, 1);
+    var bestKeys: [0..#cap] real(64) = max(real(64));
+    var bestCoeffs: [0..#cap, 1..degree] real(64);
+    var bestEmb: [0..#cap, 1..numEmbeddings] complex(128);
+    var bestCount = 0;
 
-    forall idx in 0..#total with (ref found) {
+    forall idx in 0..#total with (ref bestKeys, ref bestCoeffs, ref bestEmb, ref bestCount) {
       var w: [1..degree] real(64);
       var rem = idx;
       for c in 1..degree {
@@ -76,41 +82,54 @@ module SmallElements {
         w[c] = (digit - B): real(64);
       }
       var e: [1..numEmbeddings] complex(128);
-      var keep = true;
       for row in 1..numEmbeddings {
         var s: complex(128) = 0.0;
         for c in 1..degree do s += nf.basis[row, c] * w[c];
         e[row] = s;
-        if abs(s) > R[row] then keep = false;
       }
-      if keep then found.pushBack((0, w, e));
+      const n = absNorm(nf, e);
+      // Insert into this task's view of the global top-cap list under a
+      // lock; cap is small (hundreds), so contention is not a bottleneck
+      // relative to the O(total) work above.
+      insertCandidate(bestKeys, bestCoeffs, bestEmb, bestCount, n, w, e);
     }
 
-    const pool = found.toArray();
-    var keepIdx: [0..#(min(pool.size, candidateCap))] int;
-    if pool.size > candidateCap {
-      var keys: [pool.domain] (real(64), int);
-      forall (k, idx) in zip(keys.domain, pool.domain) {
-        const (_, w, e) = pool[idx];
-        keys[k] = (absNorm(nf, e), idx);
-      }
-      sort(keys);
-      for i in keepIdx.domain do keepIdx[i] = keys[i][1];
-    } else {
-      for i in keepIdx.domain do keepIdx[i] = pool.domain.low + i;
-    }
-
+    const keepN = min(bestCount, cap);
     var result: SmallElementSet;
     result.degree = degree;
     result.numEmbeddings = numEmbeddings;
-    result.n = keepIdx.size;
+    result.n = keepN;
     result.cDom = {1..result.n, 1..degree};
     result.eDom = {1..result.n, 1..numEmbeddings};
     for i in 1..result.n {
-      const (_, w, e) = pool[keepIdx[i-1]];
-      for c in 1..degree do result.coeffs[i, c] = w[c];
-      for row in 1..numEmbeddings do result.emb[i, row] = e[row];
+      for c in 1..degree do result.coeffs[i, c] = bestCoeffs[i-1, c];
+      for row in 1..numEmbeddings do result.emb[i, row] = bestEmb[i-1, row];
     }
     return result;
+  }
+
+  // Maintains a small sorted (ascending by key) top-`cap` list in place,
+  // guarded by a single global lock. Simpler and plenty fast enough here
+  // (cap is at most a few thousand) compared to a lock-free structure.
+  private var _insertLock: sync bool = true;
+  private proc insertCandidate(ref keys: [] real(64), ref coeffs: [] real(64), ref emb: [] complex(128),
+                                ref count: int, key: real(64), const ref w: [] real(64),
+                                const ref e: [] complex(128)) {
+    const cap = keys.domain.size;
+    _insertLock.readFE();
+    if count < cap || key < keys[cap-1] {
+      var pos = min(count, cap-1);
+      while pos > 0 && keys[pos-1] > key {
+        keys[pos] = keys[pos-1];
+        for c in coeffs.domain.dim(1) do coeffs[pos, c] = coeffs[pos-1, c];
+        for r in emb.domain.dim(1) do emb[pos, r] = emb[pos-1, r];
+        pos -= 1;
+      }
+      keys[pos] = key;
+      for c in coeffs.domain.dim(1) do coeffs[pos, c] = w[c];
+      for r in emb.domain.dim(1) do emb[pos, r] = e[r];
+      if count < cap then count += 1;
+    }
+    _insertLock.writeEF(true);
   }
 }

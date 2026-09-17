@@ -20,6 +20,7 @@ module Sieve {
   use NumberField;
   use SmallElements;
   use List;
+  use Math;
 
   record Box {
     var degree: int;
@@ -63,13 +64,26 @@ module Sieve {
     return isProjectionAbsorbed(nf, centers, radii, candidates, K);
   }
 
+  // Small relative safety margin subtracted from K before comparing: a box
+  // whose true maximum norm is *exactly* K (e.g. one edge sits precisely on
+  // a genuine critical point of the field, which happens whenever that
+  // critical point's coefficients are dyadic, as is common) can have its
+  // computed maxNorm come out a few ULPs *below* K purely from
+  // floating-point rounding in the embedding/subtraction/multiplication
+  // chain -- this was observed to falsely "absorb" the exact-boundary box
+  // for x^2-2 at K=0.5 once bisection went deep enough to expose it. The
+  // margin is relative (scaled to K) so it stays meaningful whether K is
+  // order 1 or order 1e-3.
+  private const absorptionSafetyMargin = 1.0e-9;
+
   private proc isProjectionAbsorbed(const ref nf: NumberFieldData, const ref centers: [] complex(128),
                                      const ref radii: [] real(64), const ref candidates: SmallElementSet,
                                      K: real(64)): bool {
+    const threshold = K * (1.0 - absorptionSafetyMargin);
     for i in 1..candidates.n {
       var shifted: [1..nf.numEmbeddings] complex(128);
       for row in 1..nf.numEmbeddings do shifted[row] = centers[row] - candidates.emb[i, row];
-      if calculateBoxMaxNorm(nf, shifted, radii) < K then return true;
+      if calculateBoxMaxNorm(nf, shifted, radii) < threshold then return true;
     }
     return false;
   }
@@ -136,18 +150,20 @@ module Sieve {
     return new Box(degree=nf.degree, centerDom=box.centerDom, center=newCenter, widths=newWidths);
   }
 
-  // Direct absorption, then (if that fails) a bounded sweep of fundamental
-  // unit powers with recentering. `unitExponentRange` controls how many
-  // powers of each fundamental unit are tried (e.g. 3 tries exponents
-  // -3..-1 and 1..3 for every fundamental unit).
+  // Direct absorption, then (if that fails) a sweep of fundamental unit
+  // powers with recentering. `unitExponentRange` controls how many powers
+  // of each fundamental unit are tried (both signs); this needs to be
+  // large enough to reach whatever power of the unit is relevant for a
+  // given field's regulator (see runSieve for how the default scales with
+  // the field's own unit magnitudes).
   proc isBoxAbsorbedWithUnits(const ref nf: NumberFieldData, const ref box: Box,
                                const ref candidates: SmallElementSet, K: real(64),
-                               unitExponentRange: int = 3): bool {
+                               unitExponentRange: int = 1): bool {
     var centers: [1..nf.numEmbeddings] complex(128);
     var radii: [1..nf.numEmbeddings] real(64);
     computeBoxProjections(nf, box, centers, radii);
     if isProjectionAbsorbed(nf, centers, radii, candidates, K) then return true;
-    if nf.numUnits == 0 || unitExponentRange == 0 then return false;
+    if nf.numUnits == 0 then return false;
 
     for u in 1..nf.numUnits {
       for e in 1..unitExponentRange {
@@ -203,10 +219,22 @@ module Sieve {
   // Runs cut+absorb starting from the fundamental domain [-0.5,0.5]^degree
   // until every box is absorbed, or the resolution/depth budget is
   // exhausted. Returns the surviving ("uncleared") boxes, if any.
+  // minWidth guards against a floating-point precision cliff: for a box
+  // whose edge sits exactly on a genuine critical point (common, since
+  // critical points are often dyadic in the integral-basis coordinates),
+  // the true gap between its computed max-norm and K shrinks to zero
+  // *linearly with width* as the box shrinks (not just "gets small" --
+  // provably approaches exactly 0), so past some depth no floating-point
+  // comparison (regardless of safety margin) can reliably tell "exactly at
+  // the boundary" apart from "genuinely absorbable". Empirically this
+  // starts to bite for widths below roughly 1e-7 to 1e-8; going deeper
+  // than that does not yield genuinely higher-quality answers, only an
+  // increasing risk of a false "cleared" result, so we stop there.
   proc runSieve(const ref nf: NumberFieldData, K: real(64), maxDepth: int = 30,
                 minWidth: real(64) = 1.0e-7, boundRange: int = 0, verbose: bool = false,
-                maxProblems: int = 200_000, useUnits: bool = false, unitExponentRange: int = 3): SieveResult {
-    const candidates = smallElements(nf, K, boundRange=boundRange);
+                maxProblems: int = 200_000, useUnits: bool = false, unitExponentRange: int = 3,
+                candidateCap: int = 2000): SieveResult {
+    const candidates = smallElements(nf, K, boundRange=boundRange, candidateCap=candidateCap);
     if verbose then writeln("  [sieve] K=", K, " candidates=", candidates.n);
     const cDom = {1..nf.degree};
     var rootCenter: [cDom] real(64) = 0.0;

@@ -50,6 +50,12 @@ tags:
 # ======================================================================
 CHPL=chpl
 CHPL_BIN=euclid_chpl
+CHPL_DEBUG_BIN=euclid_chpl_debug
+# --fast disables Chapel's runtime bounds/overflow checking in exchange for
+# a large speedup; use `make chapel-debug` (no --fast) when tracking down a
+# correctness bug, since that keeps the checks enabled and gives better
+# error messages/backtraces.
+CHPL_FLAGS=--fast
 CHPL_MODULES=NumberField.chpl SmallElements.chpl Sieve.chpl Certify.chpl
 TEST_BUILD_DIR=tests/build
 SMOKE_TESTS=test_numberfield test_smallelements test_sieve test_sieve_debug test_certify
@@ -67,14 +73,23 @@ x5-x-1   x^5-x-1
 endef
 export FIELD_LIST
 
-.PHONY: all chapel smoke test check fixtures clean-chapel
+.PHONY: all chapel chapel-debug smoke test check fixtures clean-chapel
 
 all: euclid chapel
 
+# Optimized build (default): what you want for actually running the sieve.
 chapel: $(CHPL_BIN)
 
 $(CHPL_BIN): main.chpl $(CHPL_MODULES)
-	$(CHPL) -M . main.chpl -o $(CHPL_BIN)
+	$(CHPL) $(CHPL_FLAGS) -M . main.chpl -o $(CHPL_BIN)
+
+# Unoptimized build: bounds/overflow checks stay enabled; use this while
+# debugging correctness issues. Produces ./euclid_chpl_debug so it can
+# coexist with the optimized ./euclid_chpl.
+chapel-debug: $(CHPL_DEBUG_BIN)
+
+$(CHPL_DEBUG_BIN): main.chpl $(CHPL_MODULES)
+	$(CHPL) -M . main.chpl -o $(CHPL_DEBUG_BIN)
 
 $(TEST_BUILD_DIR):
 	mkdir -p $(TEST_BUILD_DIR)
@@ -107,4 +122,4 @@ test: euclid chapel fixtures
 check: smoke test
 
 clean-chapel:
-	rm -rf $(CHPL_BIN) $(CHPL_BIN)_real $(TEST_BUILD_DIR) *.dSYM
+	rm -rf $(CHPL_BIN) $(CHPL_BIN)_real $(CHPL_DEBUG_BIN) $(CHPL_DEBUG_BIN)_real $(TEST_BUILD_DIR) *.dSYM

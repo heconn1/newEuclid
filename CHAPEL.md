@@ -42,10 +42,17 @@ hand-unrolled loops.
   of Lezowski's `small_elts` (`src/main.c`). Chapel domains must have a
   compile-time-constant rank, so the enumeration uses a single flattened
   1-D `forall` over a mixed-radix index space (an odometer decode) rather
-  than a rank-`degree` domain. Candidates are filtered by requiring every
-  embedding coordinate to be within a computed radius of the origin, then
-  capped to the smallest-norm `candidateCap` (default 500) so absorption
-  cost per box stays bounded regardless of degree.
+  than a rank-`degree` domain. Every enumerated candidate is ranked by its
+  actual field norm and the smallest-norm `candidateCap` (default 2000)
+  are kept. **This was originally a per-coordinate ball filter ("keep w iff
+  every embedding coordinate is within a computed radius of the origin")
+  instead of a norm ranking, which is wrong**: it systematically excludes
+  continued-fraction-convergent-like elements whose individual coefficients
+  are large but whose norm is small, which are exactly the absorbers real
+  quadratic (and other unit-rich) fields need. This was caught by testing
+  against a battery of norm-Euclidean real quadratic fields (`q11.txt` ...
+  `q73.txt`), several of which converged to confidently wrong answers under
+  the old filter (e.g. `x^2-57` converged to exactly 2x the true minimum).
 
 - **`Sieve.chpl`** — the core decision procedure: "is K a valid upper bound
   for M(K_field)?" A `Box` is an axis-aligned hyper-cube in integral-basis
@@ -62,12 +69,28 @@ hand-unrolled loops.
   proving a *twisted-and-recentered* copy of a box is absorbed by a small
   candidate proves the *original* box is absorbed by the (potentially very
   large) integer `gamma*u^-1`, without ever enumerating such large
-  integers directly. This is not just an optimization: fields with a large
-  regulator (e.g. real quadratic fields with a large fundamental unit)
-  have their useful absorbers spread out along the unit orbit rather than
-  clustered near the origin, and the sieve cannot converge in practice
-  without it (`x^2-61`, with fundamental unit ~39, is the empirical
-  example that demonstrated this during development).
+  integers directly. This helps some fields converge faster, but (after
+  the `SmallElements.chpl` norm-ranking fix above) is no longer load-bearing
+  for correctness the way it first appeared to be -- most of the real
+  quadratic test fields now converge correctly even with `unitExponentRange=1`.
+
+  **Floating-point safety margin**: the absorption comparison
+  (`isProjectionAbsorbed`) checks `maxNorm < K * (1 - 1e-9)`, not
+  `maxNorm < K`. This matters whenever a field's true critical point has
+  dyadic coordinates (common), because then some box's edge sits *exactly*
+  on the boundary at every bisection depth; as that box shrinks, its
+  computed max-norm approaches K from above, and past a certain depth
+  (empirically around width 1e-8) floating-point rounding in the
+  embedding/subtraction/multiplication chain can make it round to just
+  *below* K, causing a false "absorbed" verdict. `runSieve`'s default
+  `minWidth = 1e-7` stops refinement before reaching that regime (going
+  deeper doesn't produce a more correct answer for a boundary-exact case --
+  the true gap between max-norm and K shrinks to exactly 0 there, so no
+  amount of floating-point precision can safely resolve it, only a
+  certified exact check via `Certify.chpl` can). This was caught by
+  `x^2-2` (whose exact minimum 1/2 sits exactly at the coefficient-space
+  boundary) briefly, incorrectly, reporting `M(K) < 0.5` once other fixes
+  allowed deeper bisection.
 
 - **`Certify.chpl`** — Phase 3. `runSieve` only ever proves upper bounds
   (`M(K) < K`); a failure to clear does not prove a matching lower bound,
@@ -79,10 +102,35 @@ hand-unrolled loops.
   human-readable closed form (e.g. `1/3`) from a tight numeric bracket, as
   a conjecture to sanity-check against (not a proof by itself).
 
+  `exactMinimalNormAtWithCandidates` checks the sampled point against the
+  *same* norm-ranked candidate list the sieve itself used (rather than a
+  small blind coefficient range), for the same reason the sieve needs that
+  candidate list: a smaller/blind search can miss the true minimizer and
+  report a value that's too large -- confusingly, sometimes even *larger*
+  than the independently-proven upper bound. `main.chpl` additionally
+  discards any certification sample whose value exceeds the proven upper
+  bound (a `m_K(x) <= M(K_field) < hi` violation is impossible, so such a
+  sample must be a depth-limited artifact, not a genuine critical point)
+  rather than printing a self-contradictory "certified" claim.
+
 - **`main.chpl`** — CLI entry point: loads a field, brackets M(K) with an
   exponential search, refines the bracket via bisection (each trial an
   independent, parallel `runSieve` call), and finally attempts Phase 3
-  certification on the most-resistant boxes from the last "blocked" trial.
+  certification on the most-resistant boxes from a dedicated deeper sieve
+  pass at the final lower bound.
+
+  **Bracket-finding soundness fix**: a shallow (`exploreDepth`) sieve trial
+  that reports "cleared" is always trustworthy (absorption proofs are sound
+  regardless of the depth used to find them), but a shallow trial that
+  reports "blocked" is *not* -- it can simply mean the depth budget was too
+  small, not that K is genuinely too small. An earlier version used shallow
+  "blocked" results to raise the working lower bound `lo`, which could lock
+  it above the true minimum before the deep bisection phase ever ran,
+  permanently excluding the true answer from the search range (this is how
+  several real quadratic fields, e.g. `x^2-19`, previously converged
+  confidently to the wrong value). `lo` now always starts at the trivially
+  safe value 0 and is only ever raised from a *deep* (`refineDepth`)
+  "blocked" result.
 
 ## Building and running
 
@@ -125,10 +173,14 @@ POLY="x^3-3*x-1" gp -q generate_field.gp
 - `--maxProblems` — safety valve: abandon a trial K early once the number
   of unresolved boxes exceeds this, rather than letting a doomed
   (K-too-small) trial explode combinatorially.
+- `--candidateCap` — how many smallest-norm candidates `SmallElements`
+  keeps (default 2000). Some real quadratic fields need several thousand
+  to include the right convergent-like elements; raise this if a field
+  still converges to a visibly-too-loose bracket.
 - `--useUnits` / `--unitExponentRange` — control the Phase 2 unit-action
   acceleration (on by default; see above for why it matters).
-- `--certify` / `--certifySamples` — control Phase 3 (on by default;
-  requires `gp` on `PATH`).
+- `--certify` / `--certifySamples` / `--certifyDepth` — control Phase 3
+  (on by default; requires `gp` on `PATH`).
 
 ## Validation
 
@@ -141,12 +193,51 @@ this implementation:
 | `x^2-2` | 1/2 | `[0.5, 0.500977]` |
 | `x^2-61` | 1611/1525 (~1.05639) | `[1.05762, 1.05859]` |
 | `x^3+x^2-1` | 1/5 | `[0.199219, 0.200195]` |
-| `x^3-3*x-1` | 1/3 | `[0.332897 (Pari-certified), 0.333398]` |
+| `x^3-3*x-1` | 1/3 | `[0.333008 (Pari-certified ~0.333319), 0.333984]` |
 | `x^5-x-1` | 1/4 | converges but looser; demonstrates degree-5 support |
 
 `x^2-61` and `x^3-3*x-1` are specifically the cases that the earlier
 prototypes could not solve correctly (large regulator, and rank-2 unit
 group respectively).
+
+Separately, `q11.txt` ... `q73.txt` (the 15 norm-Euclidean real quadratic
+fields, per Chatland-Davenport) were used as a wider correctness battery,
+since the C tool computes their exact minima quickly and several exposed
+real bugs (see "Bugs found and fixed" below):
+
+| Field | Reference exact minimum | Chapel bracket |
+|---|---|---|
+| `x^2-11` | 19/22 (~0.86364) | `[0.863281, 0.864258]`, fraction 19/22 exact |
+| `x^2-13` | 1/3 | `[0.333008, 0.333984]`, fraction 1/3 exact |
+| `x^2-19` | 170/171 (~0.99415) | `[0.994141, 0.995117]`, fraction 170/171 exact |
+| `x^2-29` | 4/5 | `[0.799805, 0.800781]`, fraction 4/5 exact |
+| `x^2-33` | 29/44 (~0.65909) | `[~0.6591, 0.65918]` |
+| `x^2-41` | 23/32 (0.71875) | `[0.71875, 0.719727]`, certified 0.71875 |
+| `x^2-57` | 14/19 (~0.73684) | `[0.736328, 0.737305]`, fraction 14/19 exact |
+| `x^2-73` | 1541/2136 (~0.72144) | `[0.723633, 0.724609]` -- still ~0.3% high; largest regulator (2136) in the battery, needs more `--candidateCap`/depth than the current defaults budget for in reasonable time |
+
+### Bugs found and fixed during this battery
+
+1. **`SmallElements.chpl`'s candidate filter excluded exactly the
+   absorbers real quadratic fields need** (per-coordinate ball instead of
+   norm ranking -- see the `SmallElements.chpl` bullet above). This alone
+   caused confidently-wrong answers (e.g. `x^2-57` computed as exactly 2x
+   the true minimum, `x^2-19` and others off by 10-90%).
+2. **Bracket-finding could lock the lower bound above the true minimum**
+   using untrustworthy shallow-depth "blocked" results (see the
+   `main.chpl` bullet above).
+3. **A floating-point precision cliff at exact (dyadic) critical points**
+   could produce a false "cleared" result if bisection was allowed to go
+   too deep (see the `Sieve.chpl` unit-action bullet above for the
+   `minWidth`/safety-margin fix).
+4. **`Certify.chpl`'s exact check used the same too-small a search as the
+   original (buggy) `SmallElements.chpl` filter**, and independently
+   needed the norm-ranked candidate list to avoid reporting inflated (and
+   sometimes upper-bound-contradicting) "certified" values.
+
+All four were required together to get the real quadratic battery
+converging correctly; `x^2-73` shows the remaining known limit (very large
+regulators need more compute than the current defaults budget for).
 
 Other test files under `tests/`:
 
@@ -156,6 +247,14 @@ Other test files under `tests/`:
 
 ## Known limitations / future work
 
+- **Very large regulators need more resources than the current defaults**:
+  `x^2-73` (fundamental unit ~2136) converges to a bracket that's correct
+  in direction but ~0.3% too high with default settings; larger
+  `--candidateCap`/`--refineDepth` help but cost proportionally more time
+  per trial. A field-size-aware auto-tuning heuristic (rather than fixed
+  defaults) is the natural fix, mirroring the hand-tuned, degree-indexed
+  `euclid.cfg` tables in the original C tool but keyed off the regulator
+  too, not just the degree.
 - **Performance at higher degree**: the sieve's `2^degree` branching factor
   and per-box absorption cost mean degree-5+ fields converge more slowly
   and less tightly than degree 2-3 within the same time budget (see the

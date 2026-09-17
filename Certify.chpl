@@ -23,6 +23,7 @@
 module Certify {
   use Subprocess;
   use IO;
+  use SmallElements;
 
   // Finds the fraction with the smallest denominator lying strictly
   // inside (lo, hi) (Stern-Brocot / continued-fraction mediant search).
@@ -89,6 +90,63 @@ module Certify {
     script += "print(best);\n";
     script += "quit;\n";
 
+    return runGp(script);
+  }
+
+  // Same idea as exactMinimalNormAt, but checks exactly against the same
+  // (already-shown-sufficient) candidate list the sieve itself used,
+  // rather than a blind small coefficient range. This matters because the
+  // sieve's candidates (SmallElements.chpl) are ranked by actual norm and
+  // routinely include large-coefficient/small-norm "convergent-like"
+  // elements that a naive small range would miss -- using a smaller range
+  // here would silently overestimate the true minimum at x (and can even
+  // report a value *larger* than an independently-proven upper bound).
+  // Still includes a small local range around the rounded coefficients as
+  // a cheap extra safety net.
+  proc exactMinimalNormAtWithCandidates(polynomial: string, const ref coeffs: [] real(64), degree: int,
+                                         const ref candidates: SmallElementSet, maxCandidates: int = 500,
+                                         localRange: int = 2): string throws {
+    var terms: string;
+    for i in 1..degree {
+      const (num, den) = toExactDyadic(coeffs[i]);
+      if num != 0 {
+        if terms.size > 0 then terms += " + ";
+        terms += "(" + num:string + "/" + den:string + ")*zk[" + i:string + "]";
+      }
+    }
+    if terms.size == 0 then terms = "0";
+
+    const nCand = min(candidates.n, maxCandidates);
+    var candList = "[";
+    for i in 1..nCand {
+      if i > 1 then candList += ",";
+      candList += "[";
+      for c in 1..degree {
+        if c > 1 then candList += ",";
+        candList += (round(candidates.coeffs[i, c]): int): string;
+      }
+      candList += "]";
+    }
+    candList += "]";
+
+    const R = localRange: string;
+    var script: string;
+    script += "P = " + polynomial + ";\n";
+    script += "nf = bnfinit(P);\n";
+    script += "n = poldegree(P);\n";
+    script += "zk = nf.zk;\n";
+    script += "x = " + terms + ";\n";
+    script += "cands = " + candList + ";\n";
+    script += "best = -1;\n";
+    script += "for(j=1,#cands, g=sum(i=1,n,cands[j][i]*zk[i]); m=abs(nfeltnorm(nf,x-g)); if(best==-1||m<best,best=m));\n";
+    script += "forvec(v=vector(n,i,[-" + R + "," + R + "]), g=sum(i=1,n,v[i]*zk[i]); m=abs(nfeltnorm(nf,x-g)); if(best==-1||m<best,best=m));\n";
+    script += "print(best);\n";
+    script += "quit;\n";
+
+    return runGp(script);
+  }
+
+  private proc runGp(script: string): string throws {
     var sub = spawn(["gp", "-q", "-f"], stdin=pipeStyle.pipe, stdout=pipeStyle.pipe, stderr=pipeStyle.pipe);
     sub.stdin.writeln(script);
     sub.stdin.close();

@@ -21,9 +21,19 @@ if [ ! -x ./euclid_chpl ]; then
 fi
 
 # name : polynomial : chapel extra args
+#
+# q19 and q57 regression-guard two specific bugs found via a wider real
+# quadratic battery (see CHAPEL.md "Bugs found and fixed"): q19 caught the
+# bracket-finding phase locking the lower bound above the true minimum
+# (converged to exactly 1.0 instead of 170/171), and q57 caught the
+# small-elements candidate filter excluding needed large-coefficient/
+# small-norm absorbers (converged to exactly 2x the true minimum, 28/19
+# instead of 14/19).
 FIELDS='
 x2-2     x^2-2      --initialK=1.0 --tolerance=0.001
 x2-61    x^2-61     --initialK=2.0 --tolerance=0.001
+q19      x^2-19     --initialK=1.0 --tolerance=0.001
+q57      x^2-57     --initialK=1.0 --tolerance=0.001
 x3+x2-1  x^3+x^2-1  --initialK=0.5 --tolerance=0.001
 x3-3x-1  x^3-3*x-1  --initialK=0.6 --tolerance=0.001
 x5-x-1   x^5-x-1    --initialK=0.6 --tolerance=0.01 --refineDepth=16 --maxProblems=20000
