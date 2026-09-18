@@ -195,7 +195,8 @@ for the field sizes where it matters (large regulators, higher degree).
   `calculateBoxMaxNorm` are flat numeric kernels well-suited to
   `foreach`/GPU offload) is the natural next step, and the intended way
   to close the absolute-speed gap noted above for the field sizes where
-  it matters.
+  it matters. See [`CHAPEL.md`'s Roadmap](CHAPEL.md#roadmap) for the full
+  staged plan (auto-tuning first, then multi-locale, then GPU).
 
 See [`CHAPEL.md`](CHAPEL.md) for the full writeup (including why each
 design choice was necessary, not just convenient) and the complete CLI
