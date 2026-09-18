@@ -283,13 +283,55 @@ Other test files under `tests/`:
   to the degree-scaled search range and the `hi`-based soundness guard
   (see `Certify.chpl` above), a reported certified bound is always sound
   (never exceeds the true minimum) even when it isn't tight.
-- **Parallelization roadmap** (not yet built): the per-level box list and
-  the small-elements enumeration are both `forall`-parallel today
-  (single-locale, multi-core). Scaling to multiple locales (distribute the
-  "problems" list, e.g. via a `Block`-distributed array) and to GPUs
-  (`computeBoxProjections`/`calculateBoxMaxNorm` are flat numeric kernels
-  well-suited to `foreach`/GPU offload) is the natural next step once
-  higher-degree performance needs it.
+
+See "Roadmap" below for the planned path to closing the performance gap
+documented in `README.md`.
+
+## Roadmap
+
+Staged so each phase both delivers value on its own and sets up the
+next; sequenced so cheap, high-leverage fixes come before the bigger
+architectural work they'd otherwise force a redo of.
+
+1. **Auto-tuning and single-locale performance** (no architecture change).
+   The `x^2-73` gap and manual per-field flag tuning (see "Known
+   limitations") both stem from fixed defaults for `candidateCap` /
+   `refineDepth` / `certifyDepth`; the fix is to derive them from the
+   field itself (degree *and* the fundamental units' magnitude, not just
+   degree, mirroring but improving on `euclid.cfg`'s hand-tuned tables) so
+   a large-regulator field like `x^2-73` gets a bigger budget
+   automatically instead of needing `--candidateCap=6000` by hand.
+   Alongside that: `SmallElements.smallElements` is recomputed from
+   scratch for every bisection trial even though nearby K values mostly
+   need the same candidates (worth caching/reusing across a bisection
+   run), and its candidate-ranking insert (`insertCandidate` in
+   `SmallElements.chpl`) uses a single global lock that should be
+   profiled against a per-task-local-list-then-merge design as core
+   counts grow.
+2. **Multi-locale distribution.** Distribute the per-depth-level box list
+   (currently a single-locale `list`/array in `Sieve.runSieve`) across
+   locales, replicating the small, read-only `NumberFieldData` and
+   `SmallElementSet` to each one; each locale absorption-tests its own
+   shard independently, with a gather/scatter between depth levels. Given
+   how uneven box counts can be across regions of the fundamental domain
+   (see the growth patterns in "Bugs found and fixed"), a work-stealing
+   distributed structure is likely a better fit than a static `Block`
+   distribution.
+3. **GPU offload.** `computeBoxProjections`, `calculateBoxMaxNorm`, and
+   the inner absorption-candidate loop (`isProjectionAbsorbed`) are
+   already flat, fixed-size, allocation-free numeric kernels — a natural
+   match for Chapel's `foreach`/GPU support once box and candidate data
+   are restructured from arrays-of-structs into struct-of-arrays form
+   (`SmallElementSet`'s flat 2-D `coeffs`/`emb` arrays are already in the
+   right shape; `list(Box)` traversal is not). The unit-action recentering
+   path (`recenterByUnit`, which does a degree x degree matrix-vector
+   solve per box) is a worse GPU fit and may reasonably stay CPU-side
+   even after the core absorption loop moves over.
+4. **Stretch: exact-everywhere certification.** If a field harder than
+   `x^2-73` ever needs it, revisit porting Lezowski's unit-orbit
+   cycle/graph decomposition (`src/graph.c`, Tarjan-based) as a
+   replacement for Phase 3's resistant-box sampling — already documented
+   as a fallback in "Known limitations" above, not started.
 
 ## Relationship to the original C tool
 
