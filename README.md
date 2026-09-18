@@ -123,14 +123,79 @@ all now covered by regression tests (`tests/validate.sh` runs `q19` and
 See [`CHAPEL.md`](CHAPEL.md#bugs-found-and-fixed-during-this-battery) for
 the full technical explanation of each.
 
-**Known limitations:** `x^2-73` (fundamental unit ~2136, the largest
-regulator tested) needs more `--candidateCap`/depth than the current
-defaults budget for to close its last ~0.3% gap; degree-5+ fields converge
-more slowly/loosely than degree 2-3 within the same time budget; Phase 3
-samples resistant boxes rather than porting Lezowski's full unit-orbit
-cycle/graph decomposition, so it isn't guaranteed to land exactly on the
-supremum for harder fields (though it is always sound); multi-locale/GPU
-scaling is designed for but not yet built.
+### Performance benchmarks
+
+Wall-clock timings below are from a 6-core machine, default CLI settings
+(`--tolerance=0.001`), `make all` (i.e. `--fast` Chapel build). The C tool
+uses Pari's exact bignum arithmetic on a single thread; the Chapel tool
+searches in floating point across all cores (`forall`) plus one final
+exact Pari call for certification — the two are fundamentally different
+approaches, so treat this as "current absolute cost", not an
+apples-to-apples comparison:
+
+| Field | C tool (`./euclid`) | Chapel tool (`./euclid_chpl`) | Chapel user time (parallelism) |
+|---|---|---|---|
+| `x^2-2` | ~0.2s | ~3.5s | ~12.7s (~3.6x) |
+| `x^2-61` | ~0.15s | ~68s | ~358s (~5.3x) |
+| `x^2-57` | ~0.13s | ~91s | ~450s (~4.9x) |
+| `x^2-73` (hardest regulator) | ~3.7s | ~157s | ~783s (~5.0x) |
+| `x^3+x^2-1` | ~0.9s | ~210s | ~841s (~4.0x) |
+| `x^3-3*x-1` (rank-2 units) | ~0.6s | ~198s | ~980s (~4.9x) |
+| `x^5-x-1` (degree 5) | ~50s | ~160s | ~590s (~3.7x) |
+
+"Chapel user time (parallelism)" is total CPU-seconds across all cores
+and the resulting speedup over wall-clock time — confirms the `forall`
+parallelism is being used (not close to the full 6x on this machine,
+since the small-elements ranking and per-K sieve trials have some
+unavoidably serial phases), but doesn't come close to closing the gap
+with the C tool's exact-arithmetic approach. The Chapel tool is
+currently **17-450x slower in absolute wall-clock terms** across the
+fields above (least gap on the degree-5 field, most on `x^2-61`) — this
+project prioritizes correctness and
+arbitrary-degree generality first (see "Correctness history" above); the
+parallelization roadmap below is the intended path to closing this gap
+for the field sizes where it matters (large regulators, higher degree).
+
+### Known limitations
+
+- **Very large regulators need more resources than the current
+  defaults budget for.** `x^2-73` (fundamental unit ~2136, the largest
+  regulator tested) converges to a bracket that's correct in direction but
+  still ~0.3% too high with default settings, and Phase 3 certification is
+  inconclusive there (all sampled boxes get discarded as depth-limited
+  artifacts) — larger `--candidateCap`/`--refineDepth`/`--certifyDepth`
+  close the gap but cost proportionally more time per trial (see
+  benchmarks above). A field-size-aware auto-tuning heuristic (keyed off
+  the regulator, not just the degree) is the natural fix.
+- **Performance at higher degree.** The sieve's `2^degree` branching
+  factor and per-box absorption cost mean degree-5+ fields converge more
+  slowly and less tightly than degree 2-3 within the same time budget
+  (see `x^5-x-1` above). Tuning `candidateCap`, `unitExponentRange`, and
+  the depth/tolerance parameters per field is currently manual, mirroring
+  the hand-tuned, degree-indexed `euclid.cfg` tables in the original C
+  tool.
+- **Absolute speed vs. the C tool.** As shown above, the Chapel tool is
+  currently much slower in wall-clock terms for small/simple fields,
+  since it searches in floating point rather than using Pari's exact
+  arithmetic directly; this trade-off buys arbitrary-degree support and a
+  design that scales out to clusters/GPUs (not yet built — see
+  "Parallelization roadmap" below), which the original tool's C/Pari
+  architecture cannot.
+- **Phase 3 is not the full Lezowski cycle-decomposition machinery.** It
+  samples the most-resistant boxes rather than exactly identifying the
+  unit-orbit critical cycle (`src/graph.c`'s Tarjan-based decomposition),
+  so it isn't guaranteed to land exactly on the supremum for harder
+  fields (though a reported certified bound is always sound — see
+  `Certify.chpl` above).
+- **Parallelization roadmap (not yet built).** The per-level box list and
+  the small-elements enumeration are both `forall`-parallel today
+  (single-locale, multi-core, per the benchmarks above). Scaling to
+  multiple locales (distribute the "problems" list, e.g. via a
+  `Block`-distributed array) and to GPUs (`computeBoxProjections`/
+  `calculateBoxMaxNorm` are flat numeric kernels well-suited to
+  `foreach`/GPU offload) is the natural next step, and the intended way
+  to close the absolute-speed gap noted above for the field sizes where
+  it matters.
 
 See [`CHAPEL.md`](CHAPEL.md) for the full writeup (including why each
 design choice was necessary, not just convenient) and the complete CLI
