@@ -29,10 +29,15 @@ module SmallElements {
     var n: int; // number of candidates
     var degree: int;
     var numEmbeddings: int;
+    // True when built by smallElementsReal (nf.isTotallyReal); embReal is
+    // populated and emb is left empty in that case, and vice versa.
+    var isTotallyReal: bool = false;
     var cDom: domain(2) = {1..0, 1..0};
     var coeffs: [cDom] real(64);       // [candidate, coeff index]
     var eDom: domain(2) = {1..0, 1..0};
     var emb: [eDom] complex(128);      // [candidate, embedding index]
+    var embRealDom: domain(2) = {1..0, 1..0};
+    var embReal: [embRealDom] real(64); // [candidate, embedding index], real-only fast path
   }
 
   // Choose the largest symmetric per-coordinate integer range B such that
@@ -53,8 +58,70 @@ module SmallElements {
   // choice of B when > 0 (useful for tuning/testing); `K` is currently
   // unused for filtering (norm ranking alone decides what's kept) but is
   // kept as a parameter since callers key their candidate sets by it.
+  //
+  // Dispatches to a real(64)-only fast path when every embedding is real
+  // (nf.isTotallyReal, i.e. r2 == 0 -- true for every real quadratic field
+  // and any other totally real field), which skips complex(128)
+  // arithmetic entirely in this enumeration. Fields with r2 > 0 use the
+  // general complex(128) path unchanged.
   proc smallElements(const ref nf: NumberFieldData, K: real(64), eps: real(64) = 1.0e-5,
                       boundRange: int = 0, candidateCap: int = 2000): SmallElementSet {
+    if nf.isTotallyReal then return smallElementsReal(nf, boundRange=boundRange, candidateCap=candidateCap);
+    else return smallElementsComplex(nf, boundRange=boundRange, candidateCap=candidateCap);
+  }
+
+  private proc smallElementsReal(const ref nf: NumberFieldData, boundRange: int = 0,
+                                  candidateCap: int = 2000): SmallElementSet {
+    const degree = nf.degree;
+    const r1 = nf.r1; // == nf.numEmbeddings here, since r2 == 0
+    const B = if boundRange > 0 then boundRange else candidateBoundRange(degree);
+    const span = 2*B + 1;
+
+    var total = 1: int;
+    for c in 1..degree do total *= span;
+
+    const cap = max(candidateCap, 1);
+    var bestKeys: [0..#cap] real(64) = max(real(64));
+    var bestCoeffs: [0..#cap, 1..degree] real(64);
+    var bestEmb: [0..#cap, 1..r1] real(64);
+    var bestCount = 0;
+
+    forall idx in 0..#total with (ref bestKeys, ref bestCoeffs, ref bestEmb, ref bestCount) {
+      var w: [1..degree] real(64);
+      var rem = idx;
+      for c in 1..degree {
+        const digit = rem % span;
+        rem /= span;
+        w[c] = (digit - B): real(64);
+      }
+      var e: [1..r1] real(64);
+      for row in 1..r1 {
+        var s = 0.0;
+        for c in 1..degree do s += nf.basisReal[row, c] * w[c];
+        e[row] = s;
+      }
+      var n = 1.0;
+      for row in 1..r1 do n *= abs(e[row]);
+      insertCandidate(bestKeys, bestCoeffs, bestEmb, bestCount, n, w, e);
+    }
+
+    const keepN = min(bestCount, cap);
+    var result: SmallElementSet;
+    result.degree = degree;
+    result.numEmbeddings = r1;
+    result.isTotallyReal = true;
+    result.n = keepN;
+    result.cDom = {1..result.n, 1..degree};
+    result.embRealDom = {1..result.n, 1..r1};
+    for i in 1..result.n {
+      for c in 1..degree do result.coeffs[i, c] = bestCoeffs[i-1, c];
+      for row in 1..r1 do result.embReal[i, row] = bestEmb[i-1, row];
+    }
+    return result;
+  }
+
+  private proc smallElementsComplex(const ref nf: NumberFieldData, boundRange: int = 0,
+                                     candidateCap: int = 2000): SmallElementSet {
     const degree = nf.degree;
     const numEmbeddings = nf.numEmbeddings;
     const B = if boundRange > 0 then boundRange else candidateBoundRange(degree);
@@ -112,9 +179,12 @@ module SmallElements {
   // guarded by a single global lock. Simpler and plenty fast enough here
   // (cap is at most a few thousand) compared to a lock-free structure.
   private var _insertLock: sync bool = true;
-  private proc insertCandidate(ref keys: [] real(64), ref coeffs: [] real(64), ref emb: [] complex(128),
+  // Generic over the embedding element type (real(64) or complex(128)) so
+  // both smallElementsReal and smallElementsComplex share one
+  // implementation.
+  private proc insertCandidate(ref keys: [] real(64), ref coeffs: [] real(64), ref emb: [] ?eltType,
                                 ref count: int, key: real(64), const ref w: [] real(64),
-                                const ref e: [] complex(128)) {
+                                const ref e: [] eltType) {
     const cap = keys.domain.size;
     _insertLock.readFE();
     if count < cap || key < keys[cap-1] {

@@ -56,8 +56,13 @@ module Sieve {
   }
 
   // True if some enumerated small-element candidate provably absorbs the box.
+  // Dispatches to a real(64)-only fast path for totally real fields (r2 ==
+  // 0, e.g. every real quadratic field), which skips complex(128)
+  // arithmetic entirely in this per-candidate scan -- the hottest loop in
+  // the program. Fields with r2 > 0 use the original complex(128) path.
   proc isBoxAbsorbed(const ref nf: NumberFieldData, const ref box: Box,
                       const ref candidates: SmallElementSet, K: real(64)): bool {
+    if nf.isTotallyReal then return isBoxAbsorbedReal(nf, box, candidates, K);
     var centers: [1..nf.numEmbeddings] complex(128);
     var radii: [1..nf.numEmbeddings] real(64);
     computeBoxProjections(nf, box, centers, radii);
@@ -84,6 +89,52 @@ module Sieve {
       var shifted: [1..nf.numEmbeddings] complex(128);
       for row in 1..nf.numEmbeddings do shifted[row] = centers[row] - candidates.emb[i, row];
       if calculateBoxMaxNorm(nf, shifted, radii) < threshold then return true;
+    }
+    return false;
+  }
+
+  // Real(64)-only fast path used when nf.isTotallyReal (r2 == 0): every
+  // embedding is real, so this per-candidate absorption scan never needs
+  // to pay for complex(128) multiplies whose imaginary part is always
+  // exactly zero. Mirrors isBoxAbsorbed/computeBoxProjections/
+  // calculateBoxMaxNorm/isProjectionAbsorbed above exactly, just typed
+  // real(64) throughout.
+  proc isBoxAbsorbedReal(const ref nf: NumberFieldData, const ref box: Box,
+                          const ref candidates: SmallElementSet, K: real(64)): bool {
+    var centers: [1..nf.r1] real(64);
+    var radii: [1..nf.r1] real(64);
+    computeBoxProjectionsReal(nf, box, centers, radii);
+    return isProjectionAbsorbedReal(nf, centers, radii, candidates, K);
+  }
+
+  proc computeBoxProjectionsReal(const ref nf: NumberFieldData, const ref box: Box,
+                                  ref centers: [] real(64), ref radii: [] real(64)) {
+    forall row in 1..nf.r1 {
+      var c = 0.0;
+      var r = 0.0;
+      for col in 1..nf.degree {
+        c += nf.basisReal[row, col] * box.center[col];
+        r += abs(nf.basisReal[row, col]) * box.widths[col];
+      }
+      centers[row] = c;
+      radii[row] = r;
+    }
+  }
+
+  proc calculateBoxMaxNormReal(const ref centers: [] real(64), const ref radii: [] real(64)): real(64) {
+    var maxNorm = 1.0;
+    for i in centers.domain do maxNorm *= (abs(centers[i]) + radii[i]);
+    return maxNorm;
+  }
+
+  private proc isProjectionAbsorbedReal(const ref nf: NumberFieldData, const ref centers: [] real(64),
+                                         const ref radii: [] real(64), const ref candidates: SmallElementSet,
+                                         K: real(64)): bool {
+    const threshold = K * (1.0 - absorptionSafetyMargin);
+    for i in 1..candidates.n {
+      var shifted: [1..nf.r1] real(64);
+      for row in 1..nf.r1 do shifted[row] = centers[row] - candidates.embReal[i, row];
+      if calculateBoxMaxNormReal(shifted, radii) < threshold then return true;
     }
     return false;
   }
@@ -159,10 +210,19 @@ module Sieve {
   proc isBoxAbsorbedWithUnits(const ref nf: NumberFieldData, const ref box: Box,
                                const ref candidates: SmallElementSet, K: real(64),
                                unitExponentRange: int = 1): bool {
+    // Unit multiplication is inherently complex (unitEmbeddings are stored
+    // complex(128) regardless of isTotallyReal), so recenterByUnit always
+    // needs the complex projections of the *original* box. The fast
+    // real(64) path only replaces the expensive per-candidate absorption
+    // scan itself, both for the direct box and for each unit-twisted box.
     var centers: [1..nf.numEmbeddings] complex(128);
     var radii: [1..nf.numEmbeddings] real(64);
     computeBoxProjections(nf, box, centers, radii);
-    if isProjectionAbsorbed(nf, centers, radii, candidates, K) then return true;
+    if nf.isTotallyReal {
+      if isBoxAbsorbedReal(nf, box, candidates, K) then return true;
+    } else {
+      if isProjectionAbsorbed(nf, centers, radii, candidates, K) then return true;
+    }
     if nf.numUnits == 0 then return false;
 
     for u in 1..nf.numUnits {
@@ -170,10 +230,14 @@ module Sieve {
         for sgn in (1, -1) {
           const up = unitPower(nf, u, sgn*e);
           const twisted = recenterByUnit(nf, box, centers, radii, up);
-          var tc: [1..nf.numEmbeddings] complex(128);
-          var tr: [1..nf.numEmbeddings] real(64);
-          computeBoxProjections(nf, twisted, tc, tr);
-          if isProjectionAbsorbed(nf, tc, tr, candidates, K) then return true;
+          if nf.isTotallyReal {
+            if isBoxAbsorbedReal(nf, twisted, candidates, K) then return true;
+          } else {
+            var tc: [1..nf.numEmbeddings] complex(128);
+            var tr: [1..nf.numEmbeddings] real(64);
+            computeBoxProjections(nf, twisted, tc, tr);
+            if isProjectionAbsorbed(nf, tc, tr, candidates, K) then return true;
+          }
         }
       }
     }

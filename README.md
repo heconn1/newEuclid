@@ -126,12 +126,17 @@ the full technical explanation of each.
 ### Performance benchmarks
 
 Wall-clock timings below are from a 6-core machine, default CLI settings
-(`--tolerance=0.001`), `make all` (i.e. `--fast` Chapel build). The C tool
-uses Pari's exact bignum arithmetic on a single thread; the Chapel tool
-searches in floating point across all cores (`forall`) plus one final
-exact Pari call for certification — the two are fundamentally different
-approaches, so treat this as "current absolute cost", not an
-apples-to-apples comparison:
+(`--tolerance=0.001`), `make all` (i.e. `--fast` Chapel build). Both
+tools' core search loops actually use the same arithmetic model — plain
+double-precision floating point (`double` in the C tool's `src/basef.c`,
+`real(64)` in Chapel's `Sieve.chpl`) — not Pari's exact bignum
+arithmetic. Pari is invoked exactly once per run in *each* tool: once
+for one-time field setup, and again, optionally, for a single final
+exact-certification pass (`Certify.chpl` / `src/pari_min_c.c`). So the
+gap below reflects implementation efficiency, not a different numerical
+approach — see "Optimization: real(64) fast path" below for the first
+fix targeting it, and [`CHAPEL.md`'s Roadmap](CHAPEL.md#roadmap) for the
+larger refactor expected to close most of the rest of the gap.
 
 | Field | C tool (`./euclid`) | Chapel tool (`./euclid_chpl`) | Chapel user time (parallelism) |
 |---|---|---|---|
@@ -148,13 +153,55 @@ and the resulting speedup over wall-clock time — confirms the `forall`
 parallelism is being used (not close to the full 6x on this machine,
 since the small-elements ranking and per-K sieve trials have some
 unavoidably serial phases), but doesn't come close to closing the gap
-with the C tool's exact-arithmetic approach. The Chapel tool is
-currently **17-450x slower in absolute wall-clock terms** across the
-fields above (least gap on the degree-5 field, most on `x^2-61`) — this
-project prioritizes correctness and
-arbitrary-degree generality first (see "Correctness history" above); the
-parallelization roadmap below is the intended path to closing this gap
-for the field sizes where it matters (large regulators, higher degree).
+with the C tool on its own. The Chapel tool is currently **17-450x
+slower in absolute wall-clock terms** across the fields above (least gap
+on the degree-5 field, most on `x^2-61`) — this project prioritizes
+correctness and arbitrary-degree generality first (see "Correctness
+history" above); the optimization work below and the parallelization
+roadmap further down are the intended path to closing this gap for the
+field sizes where it matters (large regulators, higher degree).
+
+### Optimization: real(64) fast path for totally real fields
+
+The numbers above motivated a first efficiency pass, guided by two
+microbenchmarks (`bench/TupleVsArrayBench.chpl`,
+`bench/BoxCopyBench.chpl`) rather than guesswork. They isolated two
+findings: raw per-coordinate array-access cost is statistically
+identical to fixed-size-tuple access once compiled with `--fast`, but
+(a) `NumberFieldData` stored every embedding — real or complex — as
+`complex(128)`, even though the `r1` real embeddings always have
+`im=0`, and (b) `Box` record construction/copying inside `bisect()` is
+6-8x more expensive with today's domain-backed arrays than an
+equivalent fixed-size tuple would be (that second, larger finding is not
+yet implemented — see [`CHAPEL.md`'s Roadmap](CHAPEL.md#roadmap)).
+
+Fixing (a) was the first, lower-risk step: `NumberField.chpl` now also
+stores a real(64)-only mirror of the embedding matrix
+(`NumberFieldData.isTotallyReal`/`basisReal`) whenever a field has `r2 ==
+0` (every real quadratic field, and any other totally real field), and
+`SmallElements.chpl`/`Sieve.chpl` dispatch to a matching real(64)-only
+candidate enumeration and box-absorption test in that case, skipping
+complex(128) arithmetic entirely in what is otherwise the hottest
+per-candidate loop in the program. Fields with `r2 > 0` (e.g.
+`x^3+x^2-1`, `x^5-x-1`, imaginary quadratics) are unaffected — they still
+use the original, unmodified complex(128) path. Validated with no change
+in output (same brackets/certified values) across `make check` and the
+full real-quadratic battery (`q2.txt`-`q73.txt`, `qn11.txt`).
+
+Measured wall-clock impact on the same 6-core machine (before vs. after,
+same CLI settings as above):
+
+| Field | Before | After | Improvement |
+|---|---|---|---|
+| `x^2-61` | 71.7s | 65.5s | ~9% |
+| `x^2-41` | 95.3s | 89.0s | ~7% |
+| `x^2-57` | 87.7s | 82.4s | ~6% |
+| `x^2-73` | 155.0s | 143.9s | ~7% |
+
+A modest, real improvement — consistent with the microbenchmark finding
+that raw arithmetic wasn't the dominant cost. The much larger win found
+by `BoxCopyBench.chpl` (tuple-based `Box`, avoiding per-bisection
+heap allocation) is the next step; see the Roadmap.
 
 ### Known limitations
 
@@ -175,12 +222,15 @@ for the field sizes where it matters (large regulators, higher degree).
   the hand-tuned, degree-indexed `euclid.cfg` tables in the original C
   tool.
 - **Absolute speed vs. the C tool.** As shown above, the Chapel tool is
-  currently much slower in wall-clock terms for small/simple fields,
-  since it searches in floating point rather than using Pari's exact
-  arithmetic directly; this trade-off buys arbitrary-degree support and a
-  design that scales out to clusters/GPUs (not yet built — see
-  "Parallelization roadmap" below), which the original tool's C/Pari
-  architecture cannot.
+  currently much slower in wall-clock terms for small/simple fields, even
+  though both tools' core search loops use the same double-precision
+  floating-point arithmetic — the gap is implementation efficiency (see
+  "Optimization: real(64) fast path" above and the Roadmap for the
+  larger tuple-based fix still pending), not a different numerical
+  approach. The generality/portability trade-off (arbitrary-degree
+  support and a design that scales out to clusters/GPUs, not yet built —
+  see "Parallelization roadmap" below) is real, but it isn't the reason
+  for today's gap.
 - **Phase 3 is not the full Lezowski cycle-decomposition machinery.** It
   samples the most-resistant boxes rather than exactly identifying the
   unit-orbit critical cycle (`src/graph.c`'s Tarjan-based decomposition),

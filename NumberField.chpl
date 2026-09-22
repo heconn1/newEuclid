@@ -35,6 +35,17 @@ module NumberField {
     var basisDom: domain(2) = {1..0, 1..0};
     var basis: [basisDom] complex(128);
 
+    // isTotallyReal = (r2 == 0): every embedding is real, so absorption
+    // testing (the hottest loop in the program -- see Sieve.chpl and
+    // SmallElements.chpl) can work entirely in real(64) instead of paying
+    // for complex(128) multiplies whose imaginary part is always exactly
+    // zero. basisReal mirrors basis's real part only when this holds;
+    // basis/unitEmbeddings are still used as before (and basisReal is left
+    // empty) for fields with r2 > 0.
+    var isTotallyReal: bool;
+    var basisRealDom: domain(2) = {1..0, 1..0};
+    var basisReal: [basisRealDom] real(64);
+
     var numUnits: int;
     // unitEmbeddings[row, u] = embedding #row of the u-th fundamental unit
     var unitsDom: domain(2) = {1..0, 1..0};
@@ -164,6 +175,12 @@ module NumberField {
         nf.unitEmbeddings[row, u] = (dataRe[idx], dataIm[idx]): complex(128);
         idx += 1;
       }
+    }
+
+    nf.isTotallyReal = (r2 == 0);
+    if nf.isTotallyReal {
+      nf.basisRealDom = {1..numEmbeddings, 1..degree};
+      for row in 1..numEmbeddings do for c in 1..degree do nf.basisReal[row, c] = nf.basis[row, c].re;
     }
 
     // Build the real, unpacked (degree x degree) embedding matrix and
