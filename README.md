@@ -49,7 +49,14 @@ they frequently reported wrong minima and were hard-capped at low degree.
   fields, though some real quadratic fields with sizable regulators still
   need it to converge in reasonable time), and a floating-point safety
   margin so bisecting all the way to a field's true (often dyadic) critical
-  point can't produce a false "cleared" result.
+  point can't produce a false "cleared" result. `Box` is generic over a
+  compile-time `param degree`, storing coordinates as a fixed-size tuple
+  instead of a domain-backed array (cheaper to construct/copy in
+  `bisect()`, which allocates `2^degree` fresh boxes per level -- see
+  "Optimization: tuple-based Box" below); `main.chpl` bridges the runtime
+  `nf.degree` to that compile-time param via a dispatch table, currently
+  covering **degree 1-8** (see [`CHAPEL.md`](CHAPEL.md#supported-field-degree)
+  for how to raise that cap).
 - `Certify.chpl` — turns a numeric upper bound into a genuine
   Pari-certified lower bound by evaluating the exact norm at the
   most-resistant sampled points, via two complementary exact-search
@@ -79,6 +86,7 @@ Validated against the C tool's exact answers (`tests/validate.sh`,
 | `x^2-61` | 1611/1525 (~1.05639) | `[1.05762, 1.05859]` |
 | `x^3+x^2-1` | 1/5 | `[0.199219, 0.200195]` |
 | `x^3-3*x-1` | 1/3 | `[0.333008, 0.333984]`, certified ~0.333319 |
+| `x^4-4*x^2+2` | 1/2 | `[0.5, 0.500977]`, certified ~0.49999 |
 | `x^5-x-1` | 1/4 | converges but looser; demonstrates degree-5 support |
 
 Also validated against the 15 norm-Euclidean real quadratic fields
@@ -134,9 +142,11 @@ arithmetic. Pari is invoked exactly once per run in *each* tool: once
 for one-time field setup, and again, optionally, for a single final
 exact-certification pass (`Certify.chpl` / `src/pari_min_c.c`). So the
 gap below reflects implementation efficiency, not a different numerical
-approach — see "Optimization: real(64) fast path" below for the first
-fix targeting it, and [`CHAPEL.md`'s Roadmap](CHAPEL.md#roadmap) for the
-larger refactor expected to close most of the rest of the gap.
+approach — see "Optimization: real(64) fast path" and "Optimization:
+tuple-based Box" below for the two efficiency passes done so far (modest
+end-to-end wins at default settings, for reasons explained there), and
+[`CHAPEL.md`'s Roadmap](CHAPEL.md#roadmap) for the auto-tuning work
+expected to unlock more of it.
 
 | Field | C tool (`./euclid`) | Chapel tool (`./euclid_chpl`) | Chapel user time (parallelism) |
 |---|---|---|---|
@@ -172,8 +182,8 @@ identical to fixed-size-tuple access once compiled with `--fast`, but
 `complex(128)`, even though the `r1` real embeddings always have
 `im=0`, and (b) `Box` record construction/copying inside `bisect()` is
 6-8x more expensive with today's domain-backed arrays than an
-equivalent fixed-size tuple would be (that second, larger finding is not
-yet implemented — see [`CHAPEL.md`'s Roadmap](CHAPEL.md#roadmap)).
+equivalent fixed-size tuple would be (that second, larger finding is
+addressed in "Optimization: tuple-based Box" below).
 
 Fixing (a) was the first, lower-risk step: `NumberField.chpl` now also
 stores a real(64)-only mirror of the embedding matrix
@@ -200,8 +210,61 @@ same CLI settings as above):
 
 A modest, real improvement — consistent with the microbenchmark finding
 that raw arithmetic wasn't the dominant cost. The much larger win found
-by `BoxCopyBench.chpl` (tuple-based `Box`, avoiding per-bisection
-heap allocation) is the next step; see the Roadmap.
+by `BoxCopyBench.chpl` (tuple-based `Box`, avoiding per-bisection heap
+allocation) is implemented next, below.
+
+### Optimization: tuple-based Box (Phase 2)
+
+`Box` and `SieveResult` (`Sieve.chpl`) are now generic over a
+compile-time `param degree`, storing coordinates as fixed-size tuples
+(`degree*real(64)`) instead of domain-backed arrays — the representation
+`BoxCopyBench.chpl` showed to be 6-8x cheaper to construct/copy.
+`main.chpl` bridges runtime to compile time with a `select nf.degree {
+when 1..8 ... }` dispatch, the one place a degree isn't already known at
+compile time. Validated for exact output parity (identical brackets,
+identical intermediate box counts) against the pre-refactor binary
+across the full real-quadratic battery, `cc23.txt`, and a newly added
+degree-4 fixture (`x^4-4*x^2+2`, added to `tests/fixtures/` and
+`tests/validate.sh`).
+
+Measured **end-to-end, at default settings, the improvement is modest
+(0-10%)** — nowhere near the 6-8x the isolated microbenchmark predicted.
+The reason: `bisect()`'s box-construction cost is O(degree) per box (2-8
+tuple/array slots), but each box's absorption test scans up to
+`candidateCap` (2000 by default) candidates — a few thousand
+floating-point operations that completely dominate wall-clock time for
+typical settings, making the box-copy savings a rounding error by
+comparison.
+
+A dedicated harness (`bench/SieveTimingBench.chpl`/
+`SieveTimingBenchOld.chpl`, isolating a single `runSieve()` call so
+`candidateCap` can be varied directly) confirms the underlying box-copy
+win is real and substantial once the absorption scan is cheap enough to
+stop masking it:
+
+| `candidateCap` | Before | After | Improvement |
+|---|---|---|---|
+| 2000 (default) | 6.64s | 6.08s | ~8% |
+| 200 | 1.95s | 1.65s | ~15% |
+| 20 | 1.74s | 0.98s | ~44% |
+| 5 | 1.76s | 0.91s | ~48% |
+| 1 | 3.77s | 1.15s | ~69% (3.3x) |
+
+(`q57.txt`, K below the true minimum so the sieve never clears, fixed
+`maxDepth`/`maxProblems` budget so each pair does comparable work.) The
+effect isn't degree-limited either: the degree-4 fixture at
+`candidateCap=20` showed a comparable ~42% improvement (36.1s -> 21.1s).
+
+Practical upshot: this refactor doesn't meaningfully speed up *today's*
+default runs (large regulators need a large `candidateCap` to find
+enough candidates, which is exactly the regime where box-copying isn't
+the bottleneck), but it pays off directly once the auto-tuning roadmap
+item (below) can shrink `candidateCap` adaptively per field, and it
+remains a real prerequisite for multi-locale/GPU work regardless of
+when that lands (see "Relevance to clusters/GPU" reasoning in the
+project's planning history) — a flat tuple has no heap allocation or
+domain descriptor to distribute or copy into a device buffer, unlike
+today's array-backed alternative.
 
 ### Known limitations
 
@@ -224,13 +287,23 @@ heap allocation) is the next step; see the Roadmap.
 - **Absolute speed vs. the C tool.** As shown above, the Chapel tool is
   currently much slower in wall-clock terms for small/simple fields, even
   though both tools' core search loops use the same double-precision
-  floating-point arithmetic — the gap is implementation efficiency (see
-  "Optimization: real(64) fast path" above and the Roadmap for the
-  larger tuple-based fix still pending), not a different numerical
-  approach. The generality/portability trade-off (arbitrary-degree
-  support and a design that scales out to clusters/GPUs, not yet built —
-  see "Parallelization roadmap" below) is real, but it isn't the reason
-  for today's gap.
+  floating-point arithmetic — the gap is implementation efficiency, not a
+  different numerical approach (see "Optimization: real(64) fast path"
+  and "Optimization: tuple-based Box" above). The tuple-based `Box`
+  refactor is implemented and correctness-validated, but at *default*
+  settings its end-to-end impact is modest (0-10%) — see that section for
+  why (the per-candidate absorption scan dominates over box construction
+  at the default `candidateCap`) and the auto-tuning roadmap item that
+  should unlock it more broadly. The generality/portability trade-off
+  (arbitrary-degree support and a design that scales out to clusters/GPUs,
+  not yet built — see "Parallelization roadmap" below) is real, but it
+  isn't the reason for today's gap.
+- **Degree capped at 8 by a compile-time dispatch table.** `main.chpl`
+  bridges `Box`'s generic `param degree` to the field's runtime degree via
+  an explicit `select nf.degree { when 1..8 ... }`; higher-degree fields
+  halt with a clear message rather than running. Not a deep limitation --
+  see [`CHAPEL.md`](CHAPEL.md#supported-field-degree) for how to extend it
+  (one `when` branch plus a recompile).
 - **Phase 3 is not the full Lezowski cycle-decomposition machinery.** It
   samples the most-resistant boxes rather than exactly identifying the
   unit-orbit critical cycle (`src/graph.c`'s Tarjan-based decomposition),

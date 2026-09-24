@@ -65,11 +65,12 @@ SMOKE_TESTS=test_numberfield test_smallelements test_sieve test_sieve_debug test
 # rather than iterated as shell words, so the literal '*' and '^' in some
 # polynomials are never glob-expanded.
 define FIELD_LIST
-x2-2     x^2-2
-x2-61    x^2-61
-x3+x2-1  x^3+x^2-1
-x3-3x-1  x^3-3*x-1
-x5-x-1   x^5-x-1
+x2-2      x^2-2
+x2-61     x^2-61
+x3+x2-1   x^3+x^2-1
+x3-3x-1   x^3-3*x-1
+x4-4x2+2  x^4-4*x^2+2
+x5-x-1    x^5-x-1
 endef
 export FIELD_LIST
 

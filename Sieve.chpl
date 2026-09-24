@@ -16,6 +16,24 @@
 // budget without absorbing everything means K is either too small or needs
 // more depth to resolve -- see Certify.chpl (Phase 3) for how to turn a
 // surviving "problem" box into a certified exact answer.
+//
+// Box is generic over a compile-time `param degree`, storing its
+// coefficients as a fixed-size tuple rather than a domain-backed array --
+// measured 6-8x cheaper to construct/copy than the array-based equivalent
+// (see bench/BoxCopyBench.chpl), which matters a great deal since
+// bisect() allocates 2^degree fresh boxes at every depth level for every
+// unresolved box. Any proc taking `const ref box: Box(?d)` infers `d`
+// automatically from the argument; only runSieve (which builds the root
+// box directly from a runtime nf.degree) needs an explicit `param degree`
+// formal, supplied by its caller at compile time -- see main.chpl's
+// `select nf.degree { ... }` dispatch.
+//
+// Indexing convention: box.center/box.widths are 0-indexed tuples
+// (Chapel's tuple convention), while NumberFieldData.basis/basisReal
+// remain 1-indexed domain arrays (unrelated data, deliberately left
+// alone). Every loop below keeps its index variable 1-based (matching
+// nf.basis's convention) and only ever offsets by one at the point of
+// tuple access (box.center(col-1)), never anywhere else.
 module Sieve {
   use NumberField;
   use SmallElements;
@@ -23,20 +41,27 @@ module Sieve {
   use Math;
 
   record Box {
-    var degree: int;
-    var centerDom: domain(1);
-    var center: [centerDom] real(64);
-    var widths: [centerDom] real(64);
+    param degree: int;
+    var center: degree*real(64);
+    var widths: degree*real(64);
   }
 
-  proc computeBoxProjections(const ref nf: NumberFieldData, const ref box: Box,
+  // Converts a Box's tuple center to a 1-indexed array, for the one place
+  // a box center needs to cross into Certify.chpl's still-array-based API.
+  proc boxCenterToArray(const ref box: Box(?d)): [1..d] real(64) {
+    var a: [1..d] real(64);
+    for i in 1..d do a[i] = box.center(i-1);
+    return a;
+  }
+
+  proc computeBoxProjections(const ref nf: NumberFieldData, const ref box: Box(?d),
                               ref centers: [] complex(128), ref radii: [] real(64)) {
     forall row in 1..nf.numEmbeddings {
       var c: complex(128) = 0.0;
       var r = 0.0;
-      for col in 1..nf.degree {
-        c += nf.basis[row, col] * box.center[col];
-        r += abs(nf.basis[row, col]) * box.widths[col];
+      for col in 1..d {
+        c += nf.basis[row, col] * box.center(col-1);
+        r += abs(nf.basis[row, col]) * box.widths(col-1);
       }
       centers[row] = c;
       radii[row] = r;
@@ -60,7 +85,7 @@ module Sieve {
   // 0, e.g. every real quadratic field), which skips complex(128)
   // arithmetic entirely in this per-candidate scan -- the hottest loop in
   // the program. Fields with r2 > 0 use the original complex(128) path.
-  proc isBoxAbsorbed(const ref nf: NumberFieldData, const ref box: Box,
+  proc isBoxAbsorbed(const ref nf: NumberFieldData, const ref box: Box(?d),
                       const ref candidates: SmallElementSet, K: real(64)): bool {
     if nf.isTotallyReal then return isBoxAbsorbedReal(nf, box, candidates, K);
     var centers: [1..nf.numEmbeddings] complex(128);
@@ -99,7 +124,7 @@ module Sieve {
   // exactly zero. Mirrors isBoxAbsorbed/computeBoxProjections/
   // calculateBoxMaxNorm/isProjectionAbsorbed above exactly, just typed
   // real(64) throughout.
-  proc isBoxAbsorbedReal(const ref nf: NumberFieldData, const ref box: Box,
+  proc isBoxAbsorbedReal(const ref nf: NumberFieldData, const ref box: Box(?d),
                           const ref candidates: SmallElementSet, K: real(64)): bool {
     var centers: [1..nf.r1] real(64);
     var radii: [1..nf.r1] real(64);
@@ -107,14 +132,14 @@ module Sieve {
     return isProjectionAbsorbedReal(nf, centers, radii, candidates, K);
   }
 
-  proc computeBoxProjectionsReal(const ref nf: NumberFieldData, const ref box: Box,
+  proc computeBoxProjectionsReal(const ref nf: NumberFieldData, const ref box: Box(?d),
                                   ref centers: [] real(64), ref radii: [] real(64)) {
     forall row in 1..nf.r1 {
       var c = 0.0;
       var r = 0.0;
-      for col in 1..nf.degree {
-        c += nf.basisReal[row, col] * box.center[col];
-        r += abs(nf.basisReal[row, col]) * box.widths[col];
+      for col in 1..d {
+        c += nf.basisReal[row, col] * box.center(col-1);
+        r += abs(nf.basisReal[row, col]) * box.widths(col-1);
       }
       centers[row] = c;
       radii[row] = r;
@@ -164,9 +189,9 @@ module Sieve {
     return p;
   }
 
-  proc recenterByUnit(const ref nf: NumberFieldData, const ref box: Box,
+  proc recenterByUnit(const ref nf: NumberFieldData, const ref box: Box(?d),
                        const ref centers: [] complex(128), const ref radii: [] real(64),
-                       const ref unitPow: [] complex(128)): Box {
+                       const ref unitPow: [] complex(128)): Box(d) {
     var tCenters: [1..nf.numEmbeddings] complex(128);
     var tRadii: [1..nf.numEmbeddings] real(64);
     forall row in 1..nf.numEmbeddings {
@@ -178,8 +203,8 @@ module Sieve {
     var t: [1..nf.degree] real(64);
     for i in 1..nf.degree do t[i] = round(w[i]);
 
-    var newCenter: [box.centerDom] real(64);
-    for i in 1..nf.degree do newCenter[i] = w[i] - t[i];
+    var newCenter: d*real(64);
+    for i in 1..d do newCenter(i-1) = w[i] - t[i];
 
     // Pull the (disk) embedding radius back into coefficient space via the
     // same triangle-inequality bound used going forward, applied to
@@ -191,14 +216,18 @@ module Sieve {
       unpackedRadius[nf.r1 + j] = tRadii[nf.r1 + j];
       unpackedRadius[nf.r1 + nf.r2 + j] = tRadii[nf.r1 + j];
     }
-    var newWidths: [box.centerDom] real(64);
-    forall c in 1..nf.degree {
+    // Serial (not forall): writes into the local tuple newWidths, which
+    // (unlike an array) has value semantics, so a parallel loop over it
+    // would need an explicit `with (ref newWidths)` -- degree is at most
+    // 8, so there's nothing to gain from parallelizing this anyway.
+    var newWidths: d*real(64);
+    for c in 1..d {
       var s = 0.0;
       for k in 1..nf.degree do s += abs(nf.sigmaInv[c, k]) * unpackedRadius[k];
-      newWidths[c] = s;
+      newWidths(c-1) = s;
     }
 
-    return new Box(degree=nf.degree, centerDom=box.centerDom, center=newCenter, widths=newWidths);
+    return new Box(degree=d, center=newCenter, widths=newWidths);
   }
 
   // Direct absorption, then (if that fails) a sweep of fundamental unit
@@ -207,7 +236,7 @@ module Sieve {
   // large enough to reach whatever power of the unit is relevant for a
   // given field's regulator (see runSieve for how the default scales with
   // the field's own unit magnitudes).
-  proc isBoxAbsorbedWithUnits(const ref nf: NumberFieldData, const ref box: Box,
+  proc isBoxAbsorbedWithUnits(const ref nf: NumberFieldData, const ref box: Box(?d),
                                const ref candidates: SmallElementSet, K: real(64),
                                unitExponentRange: int = 1): bool {
     // Unit multiplication is inherently complex (unitEmbeddings are stored
@@ -244,33 +273,33 @@ module Sieve {
     return false;
   }
 
-  proc bisect(const ref box: Box): [0..#(1 << box.degree)] Box {
-    const degree = box.degree;
-    const numChildren = 1 << degree;
-    var children: [0..#numChildren] Box;
+  proc bisect(const ref box: Box(?d)): [0..#(1 << d)] Box(d) {
+    const numChildren = 1 << d;
+    var children: [0..#numChildren] Box(d);
     for bIdx in 0..#numChildren {
-      var c: [box.centerDom] real(64);
-      var w: [box.centerDom] real(64);
-      for d in 1..degree {
-        w[d] = box.widths[d] * 0.5;
-        const dir = if (bIdx & (1 << (d-1))) != 0 then 1.0 else -1.0;
-        c[d] = box.center[d] + dir * w[d];
+      var c: d*real(64);
+      var w: d*real(64);
+      for i in 1..d {
+        w(i-1) = box.widths(i-1) * 0.5;
+        const dir = if (bIdx & (1 << (i-1))) != 0 then 1.0 else -1.0;
+        c(i-1) = box.center(i-1) + dir * w(i-1);
       }
-      children[bIdx] = new Box(degree=degree, centerDom=box.centerDom, center=c, widths=w);
+      children[bIdx] = new Box(degree=d, center=c, widths=w);
     }
     return children;
   }
 
   record SieveResult {
+    param degree: int;
     var cleared: bool;
     var depthReached: int;
     var numRemaining: int;
     var maxRemainingWidth: real(64);
     var remDom: domain(1) = {1..0};
-    var remaining: [remDom] Box;
+    var remaining: [remDom] Box(degree);
   }
 
-  private proc storeRemaining(ref res: SieveResult, const ref boxes: [] Box) {
+  private proc storeRemaining(ref res: SieveResult(?d), const ref boxes: [] Box(d)) {
     res.numRemaining = boxes.size;
     res.remDom = {1..boxes.size};
     var i = 1;
@@ -294,29 +323,29 @@ module Sieve {
   // starts to bite for widths below roughly 1e-7 to 1e-8; going deeper
   // than that does not yield genuinely higher-quality answers, only an
   // increasing risk of a false "cleared" result, so we stop there.
-  proc runSieve(const ref nf: NumberFieldData, K: real(64), maxDepth: int = 30,
+  proc runSieve(const ref nf: NumberFieldData, param degree: int, K: real(64), maxDepth: int = 30,
                 minWidth: real(64) = 1.0e-7, boundRange: int = 0, verbose: bool = false,
                 maxProblems: int = 200_000, useUnits: bool = false, unitExponentRange: int = 3,
-                candidateCap: int = 2000): SieveResult {
+                candidateCap: int = 2000): SieveResult(degree) {
     const candidates = smallElements(nf, K, boundRange=boundRange, candidateCap=candidateCap);
     if verbose then writeln("  [sieve] K=", K, " candidates=", candidates.n);
-    const cDom = {1..nf.degree};
-    var rootCenter: [cDom] real(64) = 0.0;
-    var rootWidths: [cDom] real(64) = 0.5;
-    const rootBox = new Box(degree=nf.degree, centerDom=cDom, center=rootCenter, widths=rootWidths);
+    var rootCenter: degree*real(64);
+    var rootWidths: degree*real(64);
+    for i in 0..degree-1 do rootWidths(i) = 0.5;
+    const rootBox = new Box(degree=degree, center=rootCenter, widths=rootWidths);
 
     var currentDom: domain(1) = {0..#1};
-    var current: [currentDom] Box = [rootBox];
+    var current: [currentDom] Box(degree) = [rootBox];
 
     for depth in 1..maxDepth {
       if current.size == 0 {
-        var res: SieveResult;
+        var res: SieveResult(degree);
         res.cleared = true; res.depthReached = depth-1; res.numRemaining = 0;
         res.maxRemainingWidth = 0.0;
         return res;
       }
 
-      var nextList: list(Box, parSafe=true);
+      var nextList: list(Box(degree), parSafe=true);
       forall b in current with (ref nextList) {
         const absorbed = if useUnits then isBoxAbsorbedWithUnits(nf, b, candidates, K, unitExponentRange)
                                       else isBoxAbsorbed(nf, b, candidates, K);
@@ -324,7 +353,7 @@ module Sieve {
       }
 
       if nextList.size == 0 {
-        var res: SieveResult;
+        var res: SieveResult(degree);
         res.cleared = true; res.depthReached = depth; res.numRemaining = 0;
         res.maxRemainingWidth = 0.0;
         return res;
@@ -339,25 +368,25 @@ module Sieve {
       // burn time/memory on an ever-growing tree (mirrors MAX_NUMBER_PB2
       // in the reference C implementation).
       if next.size > maxProblems {
-        var res: SieveResult;
+        var res: SieveResult(degree);
         res.cleared = false; res.depthReached = depth;
-        res.maxRemainingWidth = next[next.domain.low].widths[1];
+        res.maxRemainingWidth = next[next.domain.low].widths(0);
         storeRemaining(res, next);
         return res;
       }
 
       // Stop refining once boxes are already far smaller than minWidth --
       // further bisection cannot change the verdict at working precision.
-      const w0 = next[next.domain.low].widths[1];
+      const w0 = next[next.domain.low].widths(0);
       if w0 < minWidth || depth == maxDepth {
-        var res: SieveResult;
+        var res: SieveResult(degree);
         res.cleared = false; res.depthReached = depth;
         res.maxRemainingWidth = w0;
         storeRemaining(res, next);
         return res;
       }
 
-      var grownList: list(Box, parSafe=true);
+      var grownList: list(Box(degree), parSafe=true);
       forall b in next with (ref grownList) {
         for child in bisect(b) do grownList.pushBack(child);
       }
@@ -366,9 +395,9 @@ module Sieve {
       current = grown;
     }
 
-    var res: SieveResult;
+    var res: SieveResult(degree);
     res.cleared = false; res.depthReached = maxDepth;
-    if current.size > 0 then res.maxRemainingWidth = current[current.domain.low].widths[1];
+    if current.size > 0 then res.maxRemainingWidth = current[current.domain.low].widths(0);
     storeRemaining(res, current);
     return res;
   }

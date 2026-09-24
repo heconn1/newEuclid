@@ -34,6 +34,30 @@ proc main() throws {
   writeln("Loaded field from ", fieldFile, ": degree=", nf.degree,
           " (r1,r2)=(", nf.r1, ",", nf.r2, ") fundamentalUnits=", nf.numUnits);
 
+  // Box/SieveResult (Sieve.chpl) are generic over a compile-time `param
+  // degree` (a fixed-size tuple, not a domain-backed array -- see
+  // Sieve.chpl's header comment). nf.degree is only known at runtime
+  // (loaded from fieldFile above), so this is the one place that bridges
+  // runtime to compile time: each `when` branch below triggers a full,
+  // separate compile-time instantiation of runForDegree (and everything
+  // it calls) for that specific degree. Extending past 8 is a one-line
+  // addition (plus recompile).
+  select nf.degree {
+    when 1 do runForDegree(nf, 1);
+    when 2 do runForDegree(nf, 2);
+    when 3 do runForDegree(nf, 3);
+    when 4 do runForDegree(nf, 4);
+    when 5 do runForDegree(nf, 5);
+    when 6 do runForDegree(nf, 6);
+    when 7 do runForDegree(nf, 7);
+    when 8 do runForDegree(nf, 8);
+    otherwise halt("This build only supports degree 1-8 fields (got degree=" +
+                    nf.degree:string + "); add another `when` branch to main.chpl's " +
+                    "select and recompile if needed.");
+  }
+}
+
+proc runForDegree(const ref nf: NumberFieldData, param degree: int) throws {
   // --- Phase A: find a clearing upper bound hi ---
   //
   // IMPORTANT: a shallow (exploreDepth) sieve trial that reports "cleared"
@@ -51,7 +75,7 @@ proc main() throws {
   var lo = 0.0;
 
   var up = 0;
-  while !runSieve(nf, hi, maxDepth=exploreDepth, boundRange=boundRange, maxProblems=maxProblems,
+  while !runSieve(nf, degree, hi, maxDepth=exploreDepth, boundRange=boundRange, maxProblems=maxProblems,
                   useUnits=useUnits, unitExponentRange=unitExponentRange, candidateCap=candidateCap).cleared && up < 20 {
     hi *= 2.0;
     up += 1;
@@ -64,7 +88,7 @@ proc main() throws {
   while down < 30 {
     const mid = hi / 2.0;
     if mid <= lo then break;
-    const res = runSieve(nf, mid, maxDepth=exploreDepth, boundRange=boundRange, maxProblems=maxProblems,
+    const res = runSieve(nf, degree, mid, maxDepth=exploreDepth, boundRange=boundRange, maxProblems=maxProblems,
                           useUnits=useUnits, unitExponentRange=unitExponentRange, candidateCap=candidateCap);
     if res.cleared then hi = mid; else break;
     down += 1;
@@ -73,12 +97,12 @@ proc main() throws {
 
   // --- Phase B: bisection refinement with a deeper resolution budget ---
   var step = 0;
-  var lastBlocked: SieveResult;
+  var lastBlocked: SieveResult(degree);
   var lastBlockedK = 0.0;
   var haveBlocked = false;
   while (hi - lo) > tolerance && step < maxBisectionSteps {
     const mid = (lo + hi) / 2.0;
-    const res = runSieve(nf, mid, maxDepth=refineDepth, boundRange=boundRange, verbose=verbose, maxProblems=maxProblems,
+    const res = runSieve(nf, degree, mid, maxDepth=refineDepth, boundRange=boundRange, verbose=verbose, maxProblems=maxProblems,
                           useUnits=useUnits, unitExponentRange=unitExponentRange, candidateCap=candidateCap);
     if res.cleared {
       hi = mid;
@@ -117,7 +141,7 @@ proc main() throws {
     // produce a value inconsistent with the proven upper bound). Using
     // extra depth here makes the sampled boxes far more likely to be
     // genuine resistant points.
-    const certRes = runSieve(nf, lo, maxDepth=certifyDepth, boundRange=boundRange, maxProblems=maxProblems,
+    const certRes = runSieve(nf, degree, lo, maxDepth=certifyDepth, boundRange=boundRange, maxProblems=maxProblems,
                               useUnits=useUnits, unitExponentRange=unitExponentRange, candidateCap=candidateCap);
     const sampleSource = if certRes.numRemaining > 0 then certRes else lastBlocked;
     const sampleK = if certRes.numRemaining > 0 then lo else lastBlockedK;
@@ -133,7 +157,7 @@ proc main() throws {
     const n = min(sampleSource.numRemaining, certifySamples);
     for i in 1..n {
       try {
-        const exact = exactMinimalNormAtWithCandidates(nf.polynomial, sampleSource.remaining[i].center,
+        const exact = exactMinimalNormAtWithCandidates(nf.polynomial, boxCenterToArray(sampleSource.remaining[i]),
                                                          nf.degree, certCandidates);
         const parts = exact.split("/");
         const val = if parts.size == 2 then parts[0]:real(64) / parts[1]:real(64) else exact:real(64);

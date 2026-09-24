@@ -30,13 +30,14 @@ fi
 # small-norm absorbers (converged to exactly 2x the true minimum, 28/19
 # instead of 14/19).
 FIELDS='
-x2-2     x^2-2      --initialK=1.0 --tolerance=0.001
-x2-61    x^2-61     --initialK=2.0 --tolerance=0.001
-q19      x^2-19     --initialK=1.0 --tolerance=0.001
-q57      x^2-57     --initialK=1.0 --tolerance=0.001
-x3+x2-1  x^3+x^2-1  --initialK=0.5 --tolerance=0.001
-x3-3x-1  x^3-3*x-1  --initialK=0.6 --tolerance=0.001
-x5-x-1   x^5-x-1    --initialK=0.6 --tolerance=0.01 --refineDepth=16 --maxProblems=20000
+x2-2      x^2-2          --initialK=1.0 --tolerance=0.001
+x2-61     x^2-61         --initialK=2.0 --tolerance=0.001
+q19       x^2-19         --initialK=1.0 --tolerance=0.001
+q57       x^2-57         --initialK=1.0 --tolerance=0.001
+x3+x2-1   x^3+x^2-1      --initialK=0.5 --tolerance=0.001
+x3-3x-1   x^3-3*x-1      --initialK=0.6 --tolerance=0.001
+x4-4x2+2  x^4-4*x^2+2    --initialK=1.0 --tolerance=0.001
+x5-x-1    x^5-x-1        --initialK=0.6 --tolerance=0.01 --refineDepth=16 --maxProblems=20000
 '
 
 echo "$FIELDS" | while read -r name poly extra; do

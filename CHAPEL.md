@@ -63,6 +63,23 @@ hand-unrolled loops.
   `norme_bricolee`). Unabsorbed boxes are bisected into `2^degree` children
   and retried at finer resolution (`runSieve`).
 
+  **`Box` is generic over a compile-time `param degree`**, storing its
+  coefficients as a fixed-size tuple (`degree*real(64)`) rather than a
+  domain-backed array -- `bisect()` allocates `2^degree` fresh boxes at
+  every depth level for every unresolved box, and a tuple is measurably
+  cheaper to construct/copy than an array-backed record with the same
+  content (see "Performance work" below). `SieveResult` is generic the
+  same way, since it holds boxes. Any proc taking `const ref box: Box(?d)`
+  infers `d` automatically from the argument; only `runSieve` itself
+  (which builds the root box directly from a runtime `nf.degree`) needs an
+  explicit `param degree: int` formal, supplied by its caller at compile
+  time. Indexing convention: `box.center`/`box.widths` are 0-indexed
+  tuples (Chapel's tuple convention), while `NumberFieldData.basis`/
+  `basisReal` remain 1-indexed domain arrays (unrelated data, left alone)
+  -- every loop in `Sieve.chpl` keeps its index variable 1-based (matching
+  the array convention) and only ever offsets by one at the point of
+  tuple access (`box.center(col-1)`).
+
   This module also implements the **unit-action acceleration**
   (`isBoxAbsorbedWithUnits`, `recenterByUnit`, `unitPower`): for any unit
   `u` and integer `gamma`, `|N(u*x - gamma)| = |N(x - gamma*u^-1)|`, so
@@ -132,6 +149,20 @@ hand-unrolled loops.
   certification on the most-resistant boxes from a dedicated deeper sieve
   pass at the final lower bound.
 
+  **Bridging runtime degree to `Box`'s compile-time param**: `nf.degree`
+  is only known once `field_data.txt` is read, but `runSieve` needs a
+  `param degree: int` at compile time. `main()` loads the field, then
+  dispatches via `select nf.degree { when 1 do runForDegree(nf, 1); ...
+  when 8 do runForDegree(nf, 8); otherwise halt(...); }` into
+  `runForDegree`, a generic proc holding the rest of the original `main()`
+  body. Because Chapel resolves generics per call site at compile time
+  (not per runtime branch), all 8 `when` branches are compiled in --
+  degrees above 8 halt with a clear error rather than running; extending
+  the table for a field beyond degree 8 is a one-line addition (plus
+  recompile), matching this project's general policy of favoring compile-
+  time specialization over runtime generality where it meaningfully
+  helps performance.
+
   **Bracket-finding soundness fix**: a shallow (`exploreDepth`) sieve trial
   that reports "cleared" is always trustworthy (absorption proofs are sound
   regardless of the depth used to find them), but a shallow trial that
@@ -195,6 +226,18 @@ POLY="x^3-3*x-1" gp -q generate_field.gp
 - `--certify` / `--certifySamples` / `--certifyDepth` — control Phase 3
   (on by default; requires `gp` on `PATH`).
 
+### Supported field degree
+
+`Box`/`SieveResult` (`Sieve.chpl`) are generic over a compile-time `param
+degree` (see the `Sieve.chpl` architecture bullet above), and `main.chpl`
+dispatches to the right instantiation via `select nf.degree { when 1..8
+... }`. This means **the current build only supports degree 1-8
+fields**: `./euclid_chpl` halts with a clear error message (rather than
+misbehaving) if `field_data.txt` describes a higher-degree field. Add
+another `when` branch to `main.chpl`'s `select` and recompile to raise
+the cap -- there's no deeper architectural limit, just an explicit
+compile-time dispatch table sized for degrees actually in use so far.
+
 ## Validation
 
 `tests/validate.sh` runs the reference C `euclid` binary (ground truth)
@@ -207,6 +250,7 @@ this implementation:
 | `x^2-61` | 1611/1525 (~1.05639) | `[1.05762, 1.05859]` |
 | `x^3+x^2-1` | 1/5 | `[0.199219, 0.200195]` |
 | `x^3-3*x-1` | 1/3 | `[0.333008 (Pari-certified ~0.333319), 0.333984]` |
+| `x^4-4*x^2+2` | 1/2 | `[0.5, 0.500977]`, certified ~0.49999 |
 | `x^5-x-1` | 1/4 | converges but looser; demonstrates degree-5 support |
 
 `x^2-61` and `x^3-3*x-1` are specifically the cases that the earlier
@@ -268,6 +312,9 @@ Other test files under `tests/`:
   defaults) is the natural fix, mirroring the hand-tuned, degree-indexed
   `euclid.cfg` tables in the original C tool but keyed off the regulator
   too, not just the degree.
+- **Degree capped at 8 by the compile-time dispatch table**: see
+  "Supported field degree" above -- not a deep limitation, just needs a
+  `when` branch added to `main.chpl`'s `select nf.degree` and a recompile.
 - **Performance at higher degree**: the sieve's `2^degree` branching factor
   and per-box absorption cost mean degree-5+ fields converge more slowly
   and less tightly than degree 2-3 within the same time budget (see the
@@ -287,6 +334,46 @@ Other test files under `tests/`:
 See "Roadmap" below for the planned path to closing the performance gap
 documented in `README.md`.
 
+## Performance work
+
+Two efficiency passes so far, both guided by microbenchmarks
+(`bench/`) rather than guesswork; see `README.md`'s "Performance
+benchmarks" section for full measured tables.
+
+**Phase 1: real(64) fast path for totally real fields.** Every field
+currently in the test battery is totally real (`r2 == 0`), but
+`NumberFieldData` stored every embedding as `complex(128)` regardless.
+`NumberField.chpl`/`SmallElements.chpl`/`Sieve.chpl` now dispatch to a
+real(64)-only mirror (`isTotallyReal`/`basisReal`/`embReal`) in that
+case, skipping complex arithmetic in the hottest per-candidate loop.
+Measured ~6-9% end-to-end improvement.
+
+**Phase 2: tuple-based `Box`.** `Box`/`SieveResult` (`Sieve.chpl`) are
+now generic over a compile-time `param degree`, storing coordinates as
+fixed-size tuples instead of domain-backed arrays -- `bench/BoxCopyBench.chpl`
+measured this as 6-8x cheaper to construct/copy than the array-based
+equivalent, which matters because `bisect()` allocates `2^degree` fresh
+boxes at every depth level. `main.chpl` bridges nf.degree (a runtime
+value) to the required compile-time param via a `select nf.degree { when
+1..8 ... }` dispatch; everything downstream infers its degree from a
+`Box(?d)` argument automatically.
+
+Surprisingly, this delivered only a **modest 0-10% end-to-end
+improvement at default settings** -- a dedicated harness
+(`bench/SieveTimingBench.chpl`/`SieveTimingBenchOld.chpl`, isolating a
+single `runSieve()` call so `candidateCap` can be varied directly)
+traced this to the per-box absorption test scanning up to `candidateCap`
+(2000 by default) candidates, which dominates over `bisect()`'s O(degree)
+construction cost for typical settings. Shrinking `candidateCap` reveals
+the underlying win directly: ~44% at `candidateCap=20`, ~69% (3.3x) at
+`candidateCap=1`, and comparably (~42%) on a degree-4 field, so the
+effect is real and not degree-limited -- it's just masked by default at
+the `candidateCap` large-regulator fields currently need. This directly
+motivates prioritizing auto-tuning (Roadmap item 1 below): once
+`candidateCap` can shrink adaptively per field instead of defaulting to
+a one-size-fits-all 2000, Phase 2's win becomes visible end-to-end, not
+just in isolation.
+
 ## Roadmap
 
 Staged so each phase both delivers value on its own and sets up the
@@ -300,7 +387,11 @@ architectural work they'd otherwise force a redo of.
    field itself (degree *and* the fundamental units' magnitude, not just
    degree, mirroring but improving on `euclid.cfg`'s hand-tuned tables) so
    a large-regulator field like `x^2-73` gets a bigger budget
-   automatically instead of needing `--candidateCap=6000` by hand.
+   automatically instead of needing `--candidateCap=6000` by hand. This
+   also directly unlocks Phase 2's tuple-`Box` win end-to-end (see
+   "Performance work" above): fields that don't need a large
+   `candidateCap` should get one shrunk for them automatically, not just
+   fields that need a larger one.
    Alongside that: `SmallElements.smallElements` is recomputed from
    scratch for every bisection trial even though nearby K values mostly
    need the same candidates (worth caching/reusing across a bisection
